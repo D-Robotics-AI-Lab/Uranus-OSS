@@ -1,9 +1,23 @@
+"""Skeleton rendering from precomposed world-frame extrinsics.
+
+Ported from ``uranus/robot/skeleton_render.py``.  The one behavioural change:
+callers pass *already-composed* per-frame world-to-camera extrinsics (see
+``SkeletonEngine.compose_camera_extrinsics``) — the legacy internal
+``extrinsic @ inv(robot_to_world)`` composition is gone, because with an
+FK-expressed rig the world frame is explicit and the two consumers (renderer
+and Plücker) must share one composed extrinsic.
+
+The SH/cv2 drawing code is kept equivalent to the legacy renderer so that the
+parity gate (skeleton_refactor_plan.md §7-D1) is meaningful.
+"""
+
+from __future__ import annotations
+
 import cv2
-import mujoco
 import numpy as np
 import torch
+
 from .sh_utils import eval_sh
-from .unified_robot import precompute_fk
 
 joint_colors = [
     "#FF0000", "#00FF00", "#0000FF", "#FFFF00",
@@ -38,65 +52,10 @@ _SH_COEFF_DEFAULT = np.array([
     [ 0.5,  2.0, -0.5],
 ], dtype=np.float64)
 
+
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-
-def render_mjcf_skeleton(model_path, qpos, intrinsic, extrinsic, raw_img_size=(720, 1280), target_img_size=None):
-    model = mujoco.MjModel.from_xml_path(model_path)
-    data = mujoco.MjData(model)
-
-    if len(qpos) < model.nq:
-        full_qpos = np.zeros(model.nq)
-        full_qpos[: len(qpos)] = qpos
-        full_qpos[len(qpos): ] = qpos[-1]
-        data.qpos = full_qpos
-    else:
-        data.qpos = qpos[: model.nq]
-
-    mujoco.mj_forward(model, data)
-
-    rotation_matrix = extrinsic[:3, :3]
-    t = extrinsic[:3, 3]
-
-    if target_img_size is not None:
-        intrinsic[0, ...] *= target_img_size[1] / raw_img_size[1]
-        intrinsic[1, ...] *= target_img_size[0] / raw_img_size[0]
-    else:
-        target_img_size = raw_img_size
-
-    img = np.zeros((target_img_size[0], target_img_size[1], 3), dtype=np.uint8)
-    body_positions_2d = {}
-    positions_in_image = {}
-
-    for i in range(model.nbody):
-        pos_world = data.xpos[i]
-        pos_cam = rotation_matrix @ pos_world + t
-
-        if pos_cam[2] <= 0.01:
-            continue
-
-        u_homo = intrinsic @ pos_cam
-        u = int(u_homo[0] / u_homo[2])
-        v = int(u_homo[1] / u_homo[2])
-
-        body_positions_2d[i] = (u, v)
-        if 0 <= u < target_img_size[1] and 0 <= v < target_img_size[0]:
-            positions_in_image[i] = (u, v)
-            c = hex_to_rgb(joint_colors[i])
-            radius = int(target_img_size[0] / 60)
-            cv2.circle(img, (u, v), radius, c, -1) + 1
-            # cv2.putText(img, str(i), (u, v), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-
-    for i in range(1, model.nbody):
-        parent_id = model.body_parentid[i]
-        if i in positions_in_image or parent_id in positions_in_image:
-            if parent_id in body_positions_2d and i in body_positions_2d:
-                c = hex_to_rgb(link_colors[i])
-                thickness = int(target_img_size[0] / 120) + 1
-                cv2.line(img, body_positions_2d[parent_id], body_positions_2d[i], c, thickness)
-
-    return img
 
 
 def batch_render_sh_on_image(
@@ -184,6 +143,7 @@ def batch_render_sh_on_image(
         )
     return skeleton_imgs, rgb
 
+
 def _render_keypoints(img, keypoints, R_cam, t_cam, K, target_size):
     H, W = target_size
     dot_r     = max(1, int(H / 60))
@@ -209,46 +169,61 @@ def _render_keypoints(img, keypoints, R_cam, t_cam, K, target_size):
         cv2.line(img, proj[p_idx], proj[i], hex_to_rgb(link_colors[kp["color"] % len(link_colors)]), thickness)
 
 
-def render_skeleton_frames(robot, frames, cam_name, raw_height, raw_width, *, fk_cache=None, target_size=None):
-    """Render skeleton for a frame sequence via online FK. Returns [N, 3, H, W] uint8 tensor.
+def render_skeleton_frames(
+    ee_states_all,
+    keypoints_all,
+    extrinsics_w2c,
+    intrinsics,
+    target_size,
+    sh_corrections=None,
+):
+    """Render skeleton frames from precomputed FK + precomposed extrinsics.
 
-    Pass *fk_cache* = ``(ee_states_all, keypoints_all, robot_to_world_all)`` to
-    skip the expensive FK step when rendering multiple cameras from the same sequence.
+    Args:
+        ee_states_all: per-frame ``[(pos, rot, radius), ...]`` world-frame EE
+            states (``SkeletonEngine.get_ee_states`` output per frame).
+        keypoints_all: per-frame keypoint lists (``SkeletonEngine.get_keypoints``).
+        extrinsics_w2c: per-frame world-to-camera 4x4 (one shared camera).
+        intrinsics: per-frame 3x3 already scaled to ``target_size``.
+        sh_corrections: optional per-EE 3x3 matrices (legacy
+            ``get_ee_sh_corrections`` semantics: ``sh_rot = rot @ corr`` so
+            different flange conventions produce the same colour).
 
-    Pass *target_size* = ``(H, W)`` to render at a different resolution; intrinsics
-    are scaled from ``(raw_height, raw_width)`` to *target_size*.
+    Returns [N, 3, H, W] uint8 tensor (legacy format).
     """
-    if fk_cache is not None:
-        ee_states_all, keypoints_all, robot_to_world_all = fk_cache
-    else:
-        ee_states_all, keypoints_all, robot_to_world_all = precompute_fk(robot, frames)
-
-    H, W = target_size or (raw_height, raw_width)
+    H, W = target_size
+    N = len(extrinsics_w2c)
+    _require(N == len(ee_states_all) == len(keypoints_all) == len(intrinsics),
+             "frame count mismatch between ee states, keypoints, extrinsics, intrinsics")
 
     Ks, R_cams, t_cams = [], [], []
-    for i, frame in enumerate(frames):
-        extrinsic = np.asarray(frame[f"camera_extrinsics.{cam_name}"], dtype=np.float64)
-        extrinsic = extrinsic @ np.linalg.inv(robot_to_world_all[i])
-        K = frame[f"camera_intrinsics.{cam_name}"].copy().astype(np.float64)
-        K[0, :] *= W / raw_width
-        K[1, :] *= H / raw_height
+    for i in range(N):
+        extrinsic = np.asarray(extrinsics_w2c[i], dtype=np.float64)
+        K = np.asarray(intrinsics[i], dtype=np.float64).copy()
         Ks.append(K)
         R_cams.append(extrinsic[:3, :3])
         t_cams.append(extrinsic[:3, 3])
 
-    N = len(frames)
     imgs = np.zeros((N, H, W, 3), dtype=np.uint8)
     Ks_t = torch.as_tensor(np.stack(Ks), dtype=torch.float32)
     R_t  = torch.as_tensor(np.stack(R_cams), dtype=torch.float32)
     t_t  = torch.as_tensor(np.stack(t_cams), dtype=torch.float32)
 
     num_ee = len(ee_states_all[0])
-    sh_corrections = robot.get_ee_sh_corrections()
+    if sh_corrections is None:
+        sh_corrections = [np.eye(3, dtype=np.float32)] * num_ee
+    _require(len(sh_corrections) == num_ee, "sh_corrections length must match EE count")
     for ee_idx in range(num_ee):
-        pos = torch.as_tensor(np.stack([ee_states_all[i][ee_idx][0] for i in range(N)]), dtype=torch.float32)
-        rot = torch.as_tensor(np.stack([ee_states_all[i][ee_idx][1] for i in range(N)]), dtype=torch.float32)
-        rad = torch.tensor([ee_states_all[i][ee_idx][2] for i in range(N)], dtype=torch.float32)
-        corr = torch.as_tensor(sh_corrections[ee_idx], dtype=torch.float32)
+        pos = torch.as_tensor(
+            np.stack([ee_states_all[i][ee_idx][0] for i in range(N)]), dtype=torch.float32
+        )
+        rot = torch.as_tensor(
+            np.stack([ee_states_all[i][ee_idx][1] for i in range(N)]), dtype=torch.float32
+        )
+        rad = torch.tensor(
+            [ee_states_all[i][ee_idx][2] for i in range(N)], dtype=torch.float32
+        )
+        corr = torch.as_tensor(np.asarray(sh_corrections[ee_idx]), dtype=torch.float32)
         sh_rot = torch.bmm(rot, corr.unsqueeze(0).expand(N, -1, -1))
         imgs, _ = batch_render_sh_on_image(imgs, pos, sh_rot, Ks_t, R_t, t_t, rad)
 
@@ -256,3 +231,8 @@ def render_skeleton_frames(robot, frames, cam_name, raw_height, raw_width, *, fk
         _render_keypoints(imgs[i], keypoints_all[i], R_cams[i], t_cams[i], Ks[i], (H, W))
 
     return torch.from_numpy(imgs).permute(0, 3, 1, 2)  # [N, 3, H, W]
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)

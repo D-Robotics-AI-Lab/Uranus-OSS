@@ -1,10 +1,11 @@
-"""CLI driver for the single-GPU Uranus streaming runner.
+"""CLI driver for the single-GPU Uranus streaming runner (v2 rig format).
 
-Loads one sample directory holding ``meta.json`` (metadata: camera_names /
-robot_type / prompt / ref_cam_images) and ``temporal.json`` (time series:
-step_qpos / step_ext / step_int, produced by ``scripts/convert_samples.py``),
-drives ``uranus.runner.UranusRunner`` through ``create → N x step`` (models
-are assembled lazily inside the first ``create``), and writes per-camera mp4
+Loads one sample directory holding ``meta.json`` (rig: mjcf_path / cameras
+with mounts + intrinsics / world_from_model / end_effectors / skeleton /
+prompt) and ``temporal.json`` (``step_qpos``: full-qpos vectors, optionally
+``observation.robot2world_trans`` per frame), drives
+``uranus.runner.UranusRunner`` through ``create → N x step`` (models are
+assembled lazily inside the first ``create``), and writes per-camera mp4
 files plus a horizontally-concatenated ``preview.mp4``.
 
 The reference (create) frame is always frame 0 of the time series; chunk ``c``
@@ -24,6 +25,8 @@ import cv2
 import numpy as np
 
 from uranus.runner import UranusRunner
+from uranus.skeleton import CameraSpec, EESpec, SkeletonSpec
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Uranus single-GPU streaming runner CLI")
@@ -38,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         "--sample-dir",
         type=str,
         default=None,
-        help="sample dir with meta.json / temporal.json / ref_images",
+        help="sample dir with meta.json / temporal.json / ref_images (v2 rig format)",
     )
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--dtype", type=str, default="bf16")
@@ -60,40 +63,50 @@ def _resolve_path(path_str: str, sample_dir: Path) -> Path:
     return path if path.is_absolute() else sample_dir / path
 
 
-def _as_numpy_tree(value):
-    """Restore JSON lists back to numpy where the pipeline expects arrays.
+def _as_matrix(value) -> np.ndarray:
+    return np.asarray(value, dtype=np.float64)
 
-    Numeric (possibly nested) lists become ndarrays; dicts and anything
-    non-convertible (e.g. ragged or mixed structures) are kept as JSON trees.
-    """
-    if isinstance(value, dict):
-        return {key: _as_numpy_tree(item) for key, item in value.items()}
-    if isinstance(value, list):
-        try:
-            return np.asarray(value, dtype=np.float64)
-        except (TypeError, ValueError):  # ragged / non-numeric content
-            return [_as_numpy_tree(item) for item in value]
-    return value
+
+def _build_ee_spec(ee: dict) -> EESpec:
+    return EESpec(
+        object_type=str(ee["object_type"]),
+        object_name=str(ee["object_name"]),
+        radius_mode=str(ee["radius_mode"]),
+        pad_bodies=tuple(ee["pad_bodies"]) if ee.get("pad_bodies") is not None else None,
+        radius=float(ee["radius"]) if ee.get("radius") is not None else None,
+        sh_correction=(
+            _as_matrix(ee["sh_correction"]) if ee.get("sh_correction") is not None else None
+        ),
+    )
 
 
 def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
-    """Load a sample dir (meta.json + temporal.json) into runner-ready data.
-
-    Frame entries of ``step_qpos`` are telemetry dicts
-    (``{"observation.state": ..., "observation.robot": ...}``) — passed
-    through as-is; ``UranusRunner.step`` splits them internally.
-    """
+    """Load a v2 sample dir (meta.json + temporal.json) into runner-ready data."""
     sample_dir = Path(sample_dir)
     with (sample_dir / "meta.json").open("r", encoding="utf-8") as f:
         meta = json.load(f)
     with (sample_dir / "temporal.json").open("r", encoding="utf-8") as f:
         temporal = json.load(f)
 
-    camera_names = list(meta["camera_names"])
-    step_qpos = temporal["step_qpos"]
-    step_ext = temporal["step_ext"]
-    step_int = temporal["step_int"]
+    cameras = [
+        CameraSpec(
+            name=str(cam["name"]),
+            intrinsics=_as_matrix(cam["intrinsics"]),
+            mount_body=cam.get("mount_body"),
+            extrinsic_rel=_as_matrix(cam["extrinsic_rel"]),
+        )
+        for cam in meta["cameras"]
+    ]
+    camera_names = tuple(cam.name for cam in cameras)
 
+    skel = meta.get("skeleton") or {}
+    skeleton = SkeletonSpec(
+        mode=str(skel.get("mode", "full_tree")),
+        chains=tuple(tuple(chain) for chain in skel.get("chains", [])),
+        skip_bodies=tuple(skel.get("skip_bodies", [])),
+    )
+
+    step_qpos = temporal["step_qpos"]
     total_step_frames = num_chunks * step_length
     if len(step_qpos) < total_step_frames + 1:
         raise ValueError(
@@ -105,39 +118,39 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
     width = int(meta.get("width", 640))
     create = {
         "prompt": str(meta.get("prompt", "")),
+        "mjcf_path": str(_resolve_path(meta["mjcf_path"], sample_dir)),
         "ref_cam_images": tuple(
             _resolve_path(meta["ref_cam_images"][name], sample_dir).read_bytes()
             for name in camera_names
         ),
-        "ref_cam_extrinsics": {
-            name: _as_numpy_tree(step_ext[name][0]) for name in camera_names
-        },
-        "ref_cam_intrinsics": {
-            name: _as_numpy_tree(step_int[name][0]) for name in camera_names
-        },
-        "ref_qpos": _as_numpy_tree(step_qpos[0]),
-        "robot_type": str(meta["robot_type"]),
-        "camera_names": tuple(camera_names),
+        "ref_qpos": _as_matrix(step_qpos[0]) if not isinstance(step_qpos[0], dict) else step_qpos[0],
+        "cameras": cameras,
+        "world_from_model": (
+            _as_matrix(meta["world_from_model"])
+            if meta.get("world_from_model") is not None
+            else None
+        ),
+        "end_effectors": [_build_ee_spec(ee) for ee in meta.get("end_effectors", [])],
+        "skeleton": skeleton,
+        "camera_names": camera_names,
     }
     steps = []
     for chunk_index in range(num_chunks):
         start = chunk_index * step_length + 1
         steps.append(
             {
-                "qpos": tuple(_as_numpy_tree(f) for f in step_qpos[start : start + step_length]),
-                "cam_extrinsics": {
-                    name: [_as_numpy_tree(x) for x in step_ext[name][start : start + step_length]]
-                    for name in camera_names
-                },
-                "cam_intrinsics": {
-                    name: [_as_numpy_tree(x) for x in step_int[name][start : start + step_length]]
-                    for name in camera_names
-                },
+                "qpos": tuple(step_qpos[start : start + step_length]),
                 "num_step": step_length,
             }
         )
-    return {"camera_names": camera_names, "robot_type": create["robot_type"], "height": height, "width": width,
-            "create": create, "steps": steps}
+    return {
+        "camera_names": camera_names,
+        "robot_type": (meta.get("migrated_from") or {}).get("robot_type"),
+        "height": height,
+        "width": width,
+        "create": create,
+        "steps": steps,
+    }
 
 
 def _save_frames(frames: dict[str, list[np.ndarray]], output_dir: Path, *, fps: int, save_images: bool) -> list[str]:
@@ -202,8 +215,9 @@ def main() -> None:
     for required in ("meta.json", "temporal.json"):
         if not (sample_dir / required).is_file():
             raise SystemExit(
-                f"{required} not found in {sample_dir} — only the meta.json/temporal.json "
-                f"format is supported (convert with scripts/convert_samples.py)"
+                f"{required} not found in {sample_dir} — expected the v2 rig format "
+                f"(meta.json with cameras/mjcf_path, temporal.json with step_qpos; "
+                f"migrate legacy samples with scripts/migrate_samples.py)"
             )
     if not Path(weights_dir).is_dir():
         raise SystemExit(f"weights dir not found: {weights_dir}")
@@ -211,7 +225,7 @@ def main() -> None:
     sample = load_sample(sample_dir, step_length=args.step_length, num_chunks=args.num_chunks)
     print(
         f"[uranus-cli] sample={sample_dir} cameras={sample['camera_names']} "
-        f"robot_type={sample['robot_type']} chunks={len(sample['steps'])}",
+        f"robot={sample['robot_type']} chunks={len(sample['steps'])}",
         flush=True,
     )
     if (sample["height"], sample["width"]) != (args.height, args.width):
