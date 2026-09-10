@@ -88,7 +88,7 @@ class EESpec:
 
     object_type: str                # "body" | "site"
     object_name: str
-    radius_mode: str                # "pad_pair" | "fixed"
+    radius_mode: str                # "pad_pair" | "fixed" | "frame"
     pad_bodies: tuple[str, str] | None = None
     radius: float | None = None     # fixed mode, meters
     sh_correction: np.ndarray | None = None   # 3x3, default identity
@@ -109,9 +109,12 @@ class EESpec:
                 self.radius is not None and self.radius > 0.0,
                 f"end_effectors[{self.object_name!r}] fixed radius must be > 0",
             )
+        elif self.radius_mode == "frame":
+            pass
         else:
             raise ValueError(
-                f"end_effectors[{self.object_name!r}].radius_mode must be 'pad_pair' or 'fixed'"
+                f"end_effectors[{self.object_name!r}].radius_mode must be "
+                "'pad_pair', 'fixed', or 'frame'"
             )
         if self.sh_correction is not None:
             corr = _as_matrix(
@@ -135,11 +138,32 @@ class GripperKeypointOverride:
     ee_object_name: str
     finger_bodies: tuple[str, str]
     closing_axis: int = 1          # column index into the EE rotation
+    width_index: int | None = None  # optional per-frame gripper_widths index
 
     def validate(self) -> None:
         _require(self.ee_object_type in ("body", "site"), "gripper override ee_object_type")
         _require(len(self.finger_bodies) == 2, "gripper override needs two finger bodies")
         _require(0 <= self.closing_axis < 3, "closing_axis must be 0/1/2")
+        if self.width_index is not None:
+            _require(self.width_index >= 0, "gripper override width_index must be >= 0")
+
+
+@dataclass(frozen=True)
+class SkeletonKeypointSpec:
+    """One explicitly ordered skeleton body with stable color and parent."""
+
+    body_name: str
+    color: int
+    parent: int | None
+
+    def validate(self, index: int) -> None:
+        _require(bool(self.body_name), "skeleton keypoint body_name must be non-empty")
+        _require(self.color >= 0, "skeleton keypoint color must be >= 0")
+        if self.parent is not None:
+            _require(
+                0 <= self.parent < index,
+                f"skeleton keypoint parent must precede keypoint {index}",
+            )
 
 
 @dataclass(frozen=True)
@@ -161,14 +185,22 @@ class SkeletonSpec:
     chains: tuple[tuple[str, ...], ...] = ()
     skip_bodies: tuple[str, ...] = ()
     gripper_keypoint_overrides: tuple[GripperKeypointOverride, ...] = ()
+    keypoints: tuple[SkeletonKeypointSpec, ...] = ()
 
     def validate(self) -> None:
-        if self.mode not in ("chains", "full_tree"):
-            raise ValueError(f"skeleton.mode must be 'chains' or 'full_tree', got {self.mode!r}")
+        if self.mode not in ("chains", "full_tree", "explicit"):
+            raise ValueError(
+                "skeleton.mode must be 'chains', 'full_tree', or 'explicit', "
+                f"got {self.mode!r}"
+            )
         if self.mode == "chains":
             _require(len(self.chains) > 0, "skeleton chains must be non-empty in 'chains' mode")
             for i, chain in enumerate(self.chains):
                 _require(len(chain) > 0, f"skeleton chains[{i}] must be non-empty")
+        if self.mode == "explicit":
+            _require(bool(self.keypoints), "explicit skeleton keypoints must be non-empty")
+            for index, keypoint in enumerate(self.keypoints):
+                keypoint.validate(index)
         for ov in self.gripper_keypoint_overrides:
             ov.validate()
 
@@ -251,6 +283,11 @@ class RigSpec:
                 ee_object_name=str(ov["ee_object_name"]),
                 finger_bodies=tuple(ov["finger_bodies"]),
                 closing_axis=int(ov.get("closing_axis", 1)),
+                width_index=(
+                    int(ov["width_index"])
+                    if ov.get("width_index") is not None
+                    else None
+                ),
             )
             for ov in skel.get("gripper_keypoint_overrides", [])
         )
@@ -259,6 +296,18 @@ class RigSpec:
             chains=tuple(tuple(chain) for chain in skel.get("chains", [])),
             skip_bodies=tuple(skel.get("skip_bodies", [])),
             gripper_keypoint_overrides=overrides,
+            keypoints=tuple(
+                SkeletonKeypointSpec(
+                    body_name=str(keypoint["body_name"]),
+                    color=int(keypoint["color"]),
+                    parent=(
+                        int(keypoint["parent"])
+                        if keypoint.get("parent") is not None
+                        else None
+                    ),
+                )
+                for keypoint in skel.get("keypoints", [])
+            ),
         )
         rig = cls(
             mjcf_path=str(payload["mjcf_path"]),

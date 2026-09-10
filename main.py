@@ -27,7 +27,13 @@ import cv2
 import numpy as np
 
 from uranus.runner import UranusRunner
-from uranus.skeleton import CameraSpec, EESpec, GripperKeypointOverride, SkeletonSpec
+from uranus.skeleton import (
+    CameraSpec,
+    EESpec,
+    GripperKeypointOverride,
+    SkeletonKeypointSpec,
+    SkeletonSpec,
+)
 from uranus.utils.video import encode_h264
 
 
@@ -143,6 +149,11 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
             ee_object_name=str(override["ee_object_name"]),
             finger_bodies=tuple(override["finger_bodies"]),
             closing_axis=int(override.get("closing_axis", 1)),
+            width_index=(
+                int(override["width_index"])
+                if override.get("width_index") is not None
+                else None
+            ),
         )
         for override in skel.get("gripper_keypoint_overrides", [])
     )
@@ -151,6 +162,18 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
         chains=tuple(tuple(chain) for chain in skel.get("chains", [])),
         skip_bodies=tuple(skel.get("skip_bodies", [])),
         gripper_keypoint_overrides=overrides,
+        keypoints=tuple(
+            SkeletonKeypointSpec(
+                body_name=str(keypoint["body_name"]),
+                color=int(keypoint["color"]),
+                parent=(
+                    int(keypoint["parent"])
+                    if keypoint.get("parent") is not None
+                    else None
+                ),
+            )
+            for keypoint in skel.get("keypoints", [])
+        ),
     )
 
     step_qpos = temporal["step_qpos"]

@@ -22,9 +22,10 @@ Flow:
     incrementally VAE-decodes 4 video frames. Returns per-camera uint8 frames.
 
 Cameras are configured once at ``create`` (external fixed or body-mounted,
-``uranus.skeleton.specs.CameraSpec``); steps carry only qpos (plus an optional
-per-frame robot-to-world for movable bases). The composed extrinsics are the
-single source shared by the skeleton renderer and the Plücker conditioning.
+``uranus.skeleton.specs.CameraSpec``). Steps carry qpos and may include exact
+per-frame camera extrinsics and gripper geometry exported from Uranus-data,
+plus robot-to-world for movable bases. These conditions are shared by the
+skeleton renderer and Plücker conditioning; XML/FK remains the legacy fallback.
 
 Single-session semantics: ``create`` starts a new generation (an active
 session is silently replaced), ``step`` advances it, ``close`` releases it.
@@ -54,6 +55,7 @@ from uranus.skeleton import (
 )
 from uranus.utils.media import (
     decode_reference_images,
+    pad_list,
     pad_qpos_sequence,
     resolve_step_raw_sizes,
 )
@@ -102,6 +104,53 @@ def parse_frame(frame) -> tuple[np.ndarray, np.ndarray | None]:
         T = frame.get("observation.robot2world_trans")
         return state, (np.asarray(T, dtype=np.float64) if T is not None else None)
     return np.asarray(frame, dtype=np.float64), None
+
+
+def parse_frame_conditions(
+    frame, camera_names: tuple[str, ...]
+) -> tuple[list[np.ndarray] | None, np.ndarray | None, np.ndarray | None]:
+    """Read optional exact per-frame camera and gripper conditions."""
+    if not isinstance(frame, dict):
+        return None, None, None
+    raw_extrinsics = frame.get("camera_extrinsics")
+    extrinsics = None
+    if raw_extrinsics is not None:
+        if not isinstance(raw_extrinsics, dict):
+            raise ValueError("camera_extrinsics must be a camera-name mapping")
+        missing = [name for name in camera_names if name not in raw_extrinsics]
+        if missing:
+            raise ValueError(f"camera_extrinsics is missing cameras: {missing}")
+        extrinsics = []
+        for name in camera_names:
+            matrix = np.asarray(raw_extrinsics[name], dtype=np.float64)
+            if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+                raise ValueError(
+                    f"camera_extrinsics[{name!r}] must be a finite 4x4 matrix"
+                )
+            if not np.allclose(matrix[3], [0.0, 0.0, 0.0, 1.0], atol=1e-6):
+                raise ValueError(
+                    f"camera_extrinsics[{name!r}] has an invalid bottom row"
+                )
+            # Source calibration occasionally contains small non-rigid noise;
+            # preserve it exactly instead of projecting it onto SO(3).
+            extrinsics.append(matrix.copy())
+
+    def optional_vector(key: str) -> np.ndarray | None:
+        value = frame.get(key)
+        if value is None:
+            return None
+        array = np.asarray(value, dtype=np.float64).reshape(-1)
+        if not np.all(np.isfinite(array)):
+            raise ValueError(f"{key} must be finite")
+        if np.any(array < 0.0):
+            raise ValueError(f"{key} must be non-negative")
+        return array
+
+    return (
+        extrinsics,
+        optional_vector("end_effector_radii"),
+        optional_vector("gripper_widths"),
+    )
 
 
 @dataclass
@@ -191,8 +240,8 @@ class UranusRunner:
     ) -> None:
         """Start a new generation from the reference frame.
 
-        ``ref_qpos`` is the full MJCF qpos (length ``model.nq``) or a dict
-        ``{"observation.state": ..., "observation.robot2world_trans"?: ...}``.
+        ``ref_qpos`` is the full MJCF qpos (length ``model.nq``) or an exported
+        frame dict containing qpos plus optional exact camera/gripper conditions.
         ``cameras`` is the ordered rig — its order fixes camera order for the
         whole session (KV streams, decode order, output naming).
         ``camera_names`` is accepted for backward compatibility and must match
@@ -224,9 +273,17 @@ class UranusRunner:
         engine = SkeletonEngine(rig)
 
         qpos, T = parse_frame(ref_qpos)
+        exact_extrinsics, ee_radii, gripper_widths = parse_frame_conditions(
+            ref_qpos, camera_names
+        )
         if robot2world is not None and T is None:
             T = np.asarray(robot2world, dtype=np.float64)
-        engine.set_state(qpos, T)
+        engine.set_state(
+            qpos,
+            T,
+            end_effector_radii=ee_radii,
+            gripper_widths=gripper_widths,
+        )
 
         target_size = (self._height, self._width)
         decoded = decode_reference_images(
@@ -242,7 +299,11 @@ class UranusRunner:
             for cam in rig.cameras
         }
 
-        reference_camera_extrinsics = engine.compose_camera_extrinsics()
+        reference_camera_extrinsics = (
+            exact_extrinsics
+            if exact_extrinsics is not None
+            else engine.compose_camera_extrinsics()
+        )
         ee_states = engine.get_ee_states()
         keypoints = engine.get_keypoints()
         sh_corrections = engine.get_ee_sh_corrections()
@@ -336,9 +397,8 @@ class UranusRunner:
 
         The frame count is rounded up to a multiple of the temporal interval
         (4); short sequences are padded by repeating the last frame's inputs.
-        Each qpos entry is the full MJCF qpos vector, or a dict
-        ``{"observation.state": ..., "observation.robot2world_trans"?: ...}``
-        for movable bases. Returns ``{camera: [H, W, 3] uint8 RGB frames]}``
+        Each qpos entry is the full MJCF qpos vector or an exported frame dict.
+        Returns ``{camera: [H, W, 3] uint8 RGB frames]}``
         with exactly the rounded-up frame count per camera.
         """
         if self._state is None or self._meta is None:
@@ -363,12 +423,17 @@ class UranusRunner:
         # Split frames into (qpos, robot2world) and repeat-last pad to the
         # chunk-aligned frame count.
         split = [parse_frame(frame) for frame in qpos]
+        conditions = [parse_frame_conditions(frame, camera_names) for frame in qpos]
         qpos_sequence = [q for q, _T in split]
         T_sequence: list[np.ndarray | None] | None = None
         if any(T is not None for _q, T in split):
             T_sequence = [T for _q, T in split]
         qpos_sequence, T_sequence = pad_qpos_sequence(
             qpos_sequence, T_sequence, requested_steps, actual_steps
+        )
+        conditions = pad_list(conditions, requested_steps, name="frame_conditions")
+        conditions = pad_list(
+            conditions, actual_steps, name="frame_conditions.chunk_align"
         )
 
         target_size = (self._height, self._width)
@@ -383,16 +448,27 @@ class UranusRunner:
             end = start + chunk_size
             chunk_qpos = qpos_sequence[start:end]
             chunk_T = T_sequence[start:end] if T_sequence is not None else None
+            chunk_conditions = conditions[start:end]
 
             # FK every frame once, collect per-frame geometry, then compose
             # per-frame extrinsics per camera.
             ee_states_all, keypoints_all, extrinsics_all = [], [], []
             sh_corrections = None
             for i, frame_qpos in enumerate(chunk_qpos):
-                engine.set_state(frame_qpos, chunk_T[i] if chunk_T is not None else None)
+                exact_extrinsics, ee_radii, gripper_widths = chunk_conditions[i]
+                engine.set_state(
+                    frame_qpos,
+                    chunk_T[i] if chunk_T is not None else None,
+                    end_effector_radii=ee_radii,
+                    gripper_widths=gripper_widths,
+                )
                 ee_states_all.append(engine.get_ee_states())
                 keypoints_all.append(engine.get_keypoints())
-                extrinsics_all.append(engine.compose_camera_extrinsics())
+                extrinsics_all.append(
+                    exact_extrinsics
+                    if exact_extrinsics is not None
+                    else engine.compose_camera_extrinsics()
+                )
                 if sh_corrections is None:
                     sh_corrections = engine.get_ee_sh_corrections()
             # extrinsics_all[t][cam] -> per-camera lists

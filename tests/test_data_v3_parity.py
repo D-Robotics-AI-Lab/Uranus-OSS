@@ -16,14 +16,19 @@ from pathlib import Path
 import unittest
 
 import cv2
+import mujoco
 import numpy as np
 
 from main import load_sample
 from scripts.export_data_v3 import (
+    _asset_for_robot,
+    _episode_frames,
+    _make_robot,
     _np,
     _resample_episode,
     _slice_episode,
 )
+from uranus.runner import parse_frame_conditions
 from uranus_dataset import UranusMultiDataset
 from uranus.skeleton import CameraSpec, RigSpec, SkeletonEngine
 
@@ -43,6 +48,7 @@ class DataV3ParityTest(unittest.TestCase):
         if not cls.sample_dir.is_dir():
             raise unittest.SkipTest(f"sample directory not found: {cls.sample_dir}")
         cls.meta = json.loads((cls.sample_dir / "meta.json").read_text())
+        cls.format_version = int(cls.meta.get("format_version", 3))
         cls.temporal = json.loads((cls.sample_dir / "temporal.json").read_text())
         migrated = cls.meta.get("migrated_from", {})
         cls.repo_id = migrated.get("source_repo_id", migrated.get("repo_id"))
@@ -69,6 +75,12 @@ class DataV3ParityTest(unittest.TestCase):
         cls.child = child
         sampled, _ = _resample_episode(raw, child, cls.target_fps)
         cls.source = _slice_episode(sampled, child, cls.start_frame)
+        cls.robot_name = (
+            child.meta.get_episode_robot(cls.episode_index) or child.meta.robot
+        )
+        cls.source_frames = _episode_frames(
+            cls.source, child, cls.episode_index
+        )
         if cls.source.get("reference.observation.mobile_base") is not None:
             ref_mobile = cls.source["reference.observation.mobile_base"]
         else:
@@ -125,31 +137,20 @@ class DataV3ParityTest(unittest.TestCase):
         first_step = loaded["steps"][0]["qpos"][0]
         np.testing.assert_allclose(np.asarray(first_step["mujoco_qpos"]), cache[1])
 
-    def test_xml_camera_extrinsics_match_source_reference(self):
-        xml = self.sample_dir / self.meta["mjcf_path"]
-        engine = SkeletonEngine(
-            RigSpec(str(xml), tuple(CameraSpec(camera) for camera in self.cameras))
-        )
-        cache = json.loads((self.sample_dir / "mujoco_qpos.json").read_text())
+    def test_reference_camera_extrinsics_match_source(self):
+        if self.format_version < 4:
+            self.skipTest("exact per-frame camera extrinsics require format_version >= 4")
         first = self.temporal["step_qpos"][0]
-        transform = (
-            np.asarray(first["observation.robot2world_trans"], dtype=np.float64)
-            if isinstance(first, dict)
-            and "observation.robot2world_trans" in first
-            else None
-        )
-        engine.set_state(cache[0], transform)
-        actual = engine.compose_camera_extrinsics()
-        if self.meta.get("synthetic_transform"):
-            self.skipTest("synthetic transform intentionally differs from source")
+        actual, _, _ = parse_frame_conditions(first, tuple(self.cameras))
+        self.assertIsNotNone(actual)
         for camera, extrinsic in zip(self.cameras, actual, strict=True):
             expected = _np(self.source[f"reference.camera_extrinsics.{camera}"])
-            np.testing.assert_allclose(
-                extrinsic, expected, atol=3e-3, rtol=3e-3, err_msg=camera
-            )
+            np.testing.assert_array_equal(extrinsic, expected, err_msg=camera)
 
     def test_camera_calibration_matches_source_every_frame(self):
         """Check per-frame K/E, including cameras moving with the base."""
+        if self.format_version < 4:
+            self.skipTest("exact per-frame camera extrinsics require format_version >= 4")
         xml = self.sample_dir / self.meta["mjcf_path"]
         engine = SkeletonEngine(
             RigSpec(str(xml), tuple(CameraSpec(camera) for camera in self.cameras))
@@ -164,7 +165,10 @@ class DataV3ParityTest(unittest.TestCase):
                 else None
             )
             engine.set_state(qpos, transform)
-            actual_extrinsics = engine.compose_camera_extrinsics()
+            actual_extrinsics, _, _ = parse_frame_conditions(
+                frame, tuple(self.cameras)
+            )
+            self.assertIsNotNone(actual_extrinsics)
             for camera, actual_extrinsic in zip(self.cameras, actual_extrinsics, strict=True):
                 if index == 0:
                     expected_k = _np(self.source[f"reference.camera_intrinsics.{camera}"])
@@ -177,13 +181,76 @@ class DataV3ParityTest(unittest.TestCase):
                     atol=2e-5, rtol=2e-5, err_msg=f"{camera} K frame {index}",
                 )
                 if not synthetic:
-                    np.testing.assert_allclose(
+                    np.testing.assert_array_equal(
                         actual_extrinsic,
                         expected_e,
-                        atol=3e-3,
-                        rtol=3e-3,
                         err_msg=f"{camera} E frame {index}",
                     )
+
+    def test_ee_and_skeleton_geometry_matches_source(self):
+        if self.format_version < 4:
+            self.skipTest("exact frame geometry requires format_version >= 4")
+        loaded = load_sample(self.sample_dir, step_length=1, num_chunks=1)
+        create = loaded["create"]
+        engine = SkeletonEngine(
+            RigSpec(
+                mjcf_path=create["mjcf_path"],
+                cameras=tuple(create["cameras"]),
+                world_from_model=create["world_from_model"],
+                end_effectors=tuple(create["end_effectors"]),
+                skeleton=create["skeleton"],
+            )
+        )
+        source_robot = _make_robot(
+            self.robot_name, _asset_for_robot(self.robot_name)
+        )
+        cache = json.loads((self.sample_dir / "mujoco_qpos.json").read_text())
+        np.testing.assert_allclose(
+            engine.get_ee_sh_corrections(),
+            source_robot.get_ee_sh_corrections(),
+            atol=0.0,
+            rtol=0.0,
+        )
+        for index, (source_frame, exported_frame, qpos) in enumerate(
+            zip(self.source_frames, self.temporal["step_qpos"], cache, strict=True)
+        ):
+            source_robot.build_qpos(source_frame)
+            transform = exported_frame.get("observation.robot2world_trans")
+            _, radii, widths = parse_frame_conditions(
+                exported_frame, tuple(self.cameras)
+            )
+            engine.set_state(
+                qpos,
+                transform,
+                end_effector_radii=radii,
+                gripper_widths=widths,
+            )
+            expected_ee = source_robot.get_ee_states()
+            actual_ee = engine.get_ee_states()
+            self.assertEqual(len(actual_ee), len(expected_ee))
+            for expected, actual in zip(expected_ee, actual_ee, strict=True):
+                np.testing.assert_allclose(
+                    actual[0], expected[0], atol=3e-7, rtol=1e-6,
+                    err_msg=f"EE position frame {index}",
+                )
+                np.testing.assert_allclose(
+                    actual[1], expected[1], atol=3e-7, rtol=1e-6,
+                    err_msg=f"EE rotation frame {index}",
+                )
+                self.assertAlmostEqual(actual[2], expected[2], places=8)
+
+            expected_keypoints = source_robot.build_keypoints()
+            actual_keypoints = engine.get_keypoints()
+            self.assertEqual(len(actual_keypoints), len(expected_keypoints))
+            for expected, actual in zip(
+                expected_keypoints, actual_keypoints, strict=True
+            ):
+                self.assertEqual(actual["parent"], expected["parent"])
+                self.assertEqual(actual["color"], expected["color"])
+                np.testing.assert_allclose(
+                    actual["pos"], expected["pos"], atol=3e-7, rtol=1e-6,
+                    err_msg=f"keypoint frame {index}",
+                )
 
     def test_mobile_base_transform_matches_source(self):
         """Verify the exported robot2world sequence, including translation."""
@@ -199,25 +266,11 @@ class DataV3ParityTest(unittest.TestCase):
             np.asarray(frame["observation.robot2world_trans"], dtype=np.float64)
             for frame in self.temporal["step_qpos"]
         ]
+        robot = _make_robot(self.robot_name, _asset_for_robot(self.robot_name))
         expected = []
-        for mobile in self.source_mobile:
-            position = np.asarray(
-                mobile.get("position", np.zeros(3)), dtype=np.float64
-            ).reshape(3)
-            x, y, z, w = np.asarray(
-                mobile.get("orientation", np.zeros(4)), dtype=np.float64
-            ).reshape(4)
-            transform = np.eye(4, dtype=np.float64)
-            transform[:3, :3] = np.array(
-                [
-                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-                ],
-                dtype=np.float64,
-            )
-            transform[:3, 3] = position
-            expected.append(transform)
+        for frame in self.source_frames:
+            robot.build_qpos(frame)
+            expected.append(robot.get_robot_to_world_transform())
         self.assertEqual(len(actual), len(expected))
         np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=2e-3, rtol=2e-3)
 

@@ -1,8 +1,10 @@
 """Export one complete episode per Uranus dataset in the XML-camera format.
 
 The exporter deliberately uses ``get_episode`` rather than ``__getitem__``.
-Robot FK turns the dataset's native observation state into complete MJCF qpos;
-camera pose, mount, and calibration are then written into an episode-local XML.
+Robot FK turns the dataset's native observation state into complete MJCF qpos.
+The XML retains a portable camera rig fallback, while exact per-frame camera
+extrinsics and measured gripper geometry are kept in temporal.json so Uranus
+inference receives the same conditions as the dataset episode API.
 """
 
 from __future__ import annotations
@@ -262,13 +264,22 @@ def _camera_sequence(item: dict, camera: str) -> tuple[np.ndarray, np.ndarray, l
     return all_K[0], all_E[0], [np.asarray(value) for value in all_E]
 
 
-def _body_poses(robot, frames: list[dict]) -> tuple[list[np.ndarray], list[dict[str, np.ndarray]], list[np.ndarray]]:
+def _body_poses(robot, frames: list[dict]):
     C = np.asarray(getattr(robot, "_model_to_robot", np.eye(4)), dtype=np.float64)
     Ts, poses = [], []
-    qpos = []
+    qpos, ee_radii, gripper_widths = [], [], []
     for frame in frames:
         robot.build_qpos(frame)
         qpos.append(np.asarray(robot.data.qpos, dtype=np.float64).copy())
+        ee_radii.append(
+            [float(state[2]) for state in robot.get_ee_states()]
+        )
+        widths = getattr(robot, "_gripper_widths", None)
+        gripper_widths.append(
+            np.asarray(widths, dtype=np.float64).reshape(-1).copy()
+            if widths is not None
+            else None
+        )
         T = np.asarray(robot.get_robot_to_world_transform(), dtype=np.float64).reshape(4, 4)
         Ts.append(T)
         body_map = {}
@@ -276,7 +287,7 @@ def _body_poses(robot, frames: list[dict]) -> tuple[list[np.ndarray], list[dict[
             name = mujoco.mj_id2name(robot.model, mujoco.mjtObj.mjOBJ_BODY, body_id)
             body_map[name] = C @ _mat4(robot.data.xpos[body_id], robot.data.xmat[body_id])
         poses.append(body_map)
-    return qpos, poses, Ts
+    return qpos, poses, Ts, ee_radii, gripper_widths
 
 
 def _camera_mount(robot_name: str, camera: str, E_all: list[np.ndarray], poses, Ts) -> tuple[str | None, np.ndarray]:
@@ -301,8 +312,19 @@ def _camera_mount(robot_name: str, camera: str, E_all: list[np.ndarray], poses, 
         error = max(float(np.linalg.norm(value - rel[0])) for value in rel)
         hint_rank = hints.index(name) if name in hints else len(hints)
         scores.append((error, hint_rank, name, rel[0]))
-    scores.sort(key=lambda value: (value[1] if value[1] < len(hints) else 99, value[0]))
-    best = scores[0] if scores else None
+    best = None
+    if scores:
+        minimum_error = min(value[0] for value in scores)
+        # Treat names as a tie-breaker among transforms that fit equally well;
+        # never let a semantic hint override a substantially better FK fit.
+        candidates = [value for value in scores if value[0] <= minimum_error + 1e-3]
+        candidates.sort(
+            key=lambda value: (
+                value[1] if value[1] < len(hints) else 99,
+                value[0],
+            )
+        )
+        best = candidates[0]
     if movable_all:
         if best is None:
             raise ValueError(f"cannot find a mounted body for {robot_name}/{camera}")
@@ -414,7 +436,70 @@ def _inject_cameras(asset: Path, output: Path, cameras: list[str], Ks, mounts, r
     ET.ElementTree(root).write(output, encoding="utf-8", xml_declaration=True)
 
 
+def _explicit_mobile_skeleton(robot_name: str, robot) -> dict:
+    if robot_name == "Agibot G1":
+        from uranus_dataset.robot.robot_g1_120s import (
+            LEFT_ARM_BODIES,
+            LEFT_GRIP_BODIES,
+            RIGHT_ARM_BODIES,
+            RIGHT_GRIP_BODIES,
+        )
+
+        color_offset = 0
+        sides = (
+            (LEFT_ARM_BODIES, LEFT_GRIP_BODIES, "Link7_l"),
+            (RIGHT_ARM_BODIES, RIGHT_GRIP_BODIES, "Link7_r"),
+        )
+    else:
+        from uranus_dataset.robot.robot_g2_120s import (
+            BODY_BODIES,
+            LEFT_ARM_BODIES,
+            LEFT_GRIP_BODIES,
+            RIGHT_ARM_BODIES,
+            RIGHT_GRIP_BODIES,
+        )
+
+        color_offset = len(BODY_BODIES)
+        sides = (
+            (LEFT_ARM_BODIES, LEFT_GRIP_BODIES, "arm_l_link7"),
+            (RIGHT_ARM_BODIES, RIGHT_GRIP_BODIES, "arm_r_link7"),
+        )
+
+    keypoints = []
+    for arm_bodies, gripper_bodies, wrist_name in sides:
+        arm_indices = {}
+        for offset, name in enumerate(arm_bodies):
+            parent = None if offset == 0 else arm_indices[arm_bodies[offset - 1]]
+            arm_indices[name] = len(keypoints)
+            keypoints.append(
+                {"body_name": name, "color": color_offset + offset, "parent": parent}
+            )
+        wrist_id = mujoco.mj_name2id(
+            robot.model, mujoco.mjtObj.mjOBJ_BODY, wrist_name
+        )
+        body_to_keypoint = {wrist_id: arm_indices[wrist_name]}
+        for offset, name in enumerate(gripper_bodies):
+            body_id = mujoco.mj_name2id(
+                robot.model, mujoco.mjtObj.mjOBJ_BODY, name
+            )
+            if body_id < 0:
+                continue
+            parent = body_to_keypoint.get(
+                int(robot.model.body_parentid[body_id]), arm_indices[wrist_name]
+            )
+            body_to_keypoint[body_id] = len(keypoints)
+            keypoints.append(
+                {
+                    "body_name": name,
+                    "color": color_offset + len(arm_bodies) + offset,
+                    "parent": parent,
+                }
+            )
+    return {"mode": "explicit", "keypoints": keypoints}
+
+
 def _ee_and_skeleton(robot_name: str, robot) -> tuple[list[dict], dict]:
+    corrections = robot.get_ee_sh_corrections()
     if hasattr(robot, "ee_names"):
         names = tuple(robot.ee_names)
         are_sites = bool(getattr(robot, "ee_are_sites", False))
@@ -423,10 +508,13 @@ def _ee_and_skeleton(robot_name: str, robot) -> tuple[list[dict], dict]:
             {
                 "object_type": "site" if are_sites else "body",
                 "object_name": name,
-                "radius_mode": "pad_pair",
+                "radius_mode": "frame",
                 "pad_bodies": list(pair),
+                "sh_correction": np.asarray(correction).tolist(),
             }
-            for name, pair in zip(names, pairs, strict=True)
+            for name, pair, correction in zip(
+                names, pairs, corrections, strict=True
+            )
         ]
         chains = [list(chain) for chain in getattr(robot, "skeleton_body_names", ())]
         skeleton = {"mode": "chains", "chains": chains, "skip_bodies": []}
@@ -437,21 +525,26 @@ def _ee_and_skeleton(robot_name: str, robot) -> tuple[list[dict], dict]:
                     "ee_object_name": name,
                     "finger_bodies": list(pair),
                     "closing_axis": 1,
+                    "width_index": index,
                 }
-                for name, pair in zip(names, pairs, strict=True)
+                for index, (name, pair) in enumerate(
+                    zip(names, pairs, strict=True)
+                )
             ]
         return ees, skeleton
     if robot_name == "Panda Franka":
         # The adapter's physical EE body is a parent of the gripper.  Use the
         # co-located pinch site as the marker so canonicalizing its orientation
         # cannot rotate the downstream finger geometry.
-        return [{"object_type": "site", "object_name": "pinch", "radius_mode": "pad_pair", "pad_bodies": ["right_silicone_pad", "left_silicone_pad"]}], {"mode": "full_tree", "skip_bodies": ["gripper_center"]}
+        return [{"object_type": "site", "object_name": "pinch", "radius_mode": "pad_pair", "pad_bodies": ["right_silicone_pad", "left_silicone_pad"], "sh_correction": np.asarray(corrections[0]).tolist()}], {"mode": "full_tree", "skip_bodies": ["gripper_center"]}
     if robot_name in {"Agibot G1", "Agibot G2"}:
         names = ("gripper_center", "right_gripper_center")
         return [
-            {"object_type": "site", "object_name": name, "radius_mode": "pad_pair", "pad_bodies": [f"{side}_Left_Pad_Link", f"{side}_Right_Pad_Link"]}
-            for name, side in zip(names, ("left", "right"), strict=True)
-        ], {"mode": "full_tree", "skip_bodies": []}
+            {"object_type": "site", "object_name": name, "radius_mode": "pad_pair", "pad_bodies": [f"{side}_Left_Pad_Link", f"{side}_Right_Pad_Link"], "sh_correction": np.asarray(correction).tolist()}
+            for name, side, correction in zip(
+                names, ("left", "right"), corrections, strict=True
+            )
+        ], _explicit_mobile_skeleton(robot_name, robot)
     raise ValueError(f"no EE mapping for robot {robot_name!r}")
 
 
@@ -478,10 +571,12 @@ def export_repo(
     asset = _asset_for_robot(robot_name)
     robot = _make_robot(robot_name, asset)
     frames = _episode_frames(item, child, episode_index)
-    qpos, body_poses, Ts = _body_poses(robot, frames)
+    qpos, body_poses, Ts, ee_radii, gripper_widths = _body_poses(robot, frames)
     K_all, mounts, rels = [], [], []
+    camera_extrinsics = {}
     for camera in cameras:
         K, _, E_all = _camera_sequence(item, camera)
+        camera_extrinsics[camera] = E_all
         mount, E_or_rel = _camera_mount(robot_name, camera, E_all, body_poses, Ts)
         if mount is not None:
             # E_or_rel is camera-from-body in OpenCV coordinates.
@@ -534,10 +629,10 @@ def export_repo(
         gt_videos[camera] = str(path.relative_to(sample_dir))
 
     ee, skeleton = _ee_and_skeleton(robot_name, robot)
-    _inject_sh_corrections(temp_asset, robot_name, ee)
     _inject_cameras(temp_asset, mjcf_path, cameras, K_all, mounts, rels, raw_sizes)
     temp_asset.unlink()
     meta = {
+        "format_version": 4,
         "prompt": str(item.get("task", "")),
         "mjcf_path": str(mjcf_path.relative_to(sample_dir)),
         "cameras": [{"name": camera} for camera in cameras],
@@ -571,16 +666,20 @@ def export_repo(
         # G1/G2's many gripper joints). Keep it out of each public step_qpos
         # entry so observation.state remains the native compact signal.
         compact_state = np.asarray(frame["observation.state"], dtype=np.float64).reshape(-1).tolist()
+        entry = {
+            "observation.state": compact_state,
+            "camera_extrinsics": {
+                camera: camera_extrinsics[camera][index].tolist()
+                for camera in cameras
+            },
+            "end_effector_radii": ee_radii[index],
+        }
         mujoco_qpos.append(qpos[index].tolist())
         if movable:
-            temporal_frames.append(
-                {
-                    "observation.state": compact_state,
-                    "observation.robot2world_trans": Ts[index].tolist(),
-                }
-            )
-        else:
-            temporal_frames.append(compact_state)
+            entry["observation.robot2world_trans"] = Ts[index].tolist()
+        if gripper_widths[index] is not None:
+            entry["gripper_widths"] = gripper_widths[index].tolist()
+        temporal_frames.append(entry)
     sample_dir.mkdir(parents=True, exist_ok=True)
     (sample_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (sample_dir / "temporal.json").write_text(

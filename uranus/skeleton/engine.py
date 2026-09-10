@@ -66,6 +66,8 @@ class SkeletonEngine:
         )
         self._T = np.eye(4, dtype=np.float64)  # last set robot2world (default I)
         self._has_state = False
+        self._frame_ee_radii: np.ndarray | None = None
+        self._frame_gripper_widths: np.ndarray | None = None
 
         # Bind every spec name -> id once, fail fast (mirrors legacy _require_name).
         self._body_ids: dict[str, int] = {}
@@ -98,6 +100,9 @@ class SkeletonEngine:
             for chain in rig.skeleton.chains:
                 for name in chain:
                     self._require_body(name)
+        elif rig.skeleton.mode == "explicit":
+            for keypoint in rig.skeleton.keypoints:
+                self._require_body(keypoint.body_name)
         for name in rig.skeleton.skip_bodies:
             self._require_body(name)
         for ov in rig.skeleton.gripper_keypoint_overrides:
@@ -132,7 +137,14 @@ class SkeletonEngine:
 
     # ---------------------------------------------------------------- state
 
-    def set_state(self, qpos, robot2world=None) -> None:
+    def set_state(
+        self,
+        qpos,
+        robot2world=None,
+        *,
+        end_effector_radii=None,
+        gripper_widths=None,
+    ) -> None:
         """Set the full qpos vector and run FK.
 
         ``qpos`` must be the complete model qpos vector. ``robot2world`` is
@@ -158,6 +170,17 @@ class SkeletonEngine:
             self._T = np.eye(4, dtype=np.float64)
         else:
             self._T = rigid_transform("robot2world", robot2world).copy()
+
+        self._frame_ee_radii = (
+            np.asarray(end_effector_radii, dtype=np.float64).reshape(-1)
+            if end_effector_radii is not None
+            else None
+        )
+        self._frame_gripper_widths = (
+            np.asarray(gripper_widths, dtype=np.float64).reshape(-1)
+            if gripper_widths is not None
+            else None
+        )
 
         mujoco.mj_forward(self.model, self.data)
         self._has_state = True
@@ -229,7 +252,14 @@ class SkeletonEngine:
             pos = (R_wc @ np.asarray(pos_m) + t_wc).astype(np.float32)
             rot = (R_wc @ np.asarray(rot_m).reshape(3, 3)).astype(np.float32)
 
-            if ee.radius_mode == "pad_pair":
+            if ee.radius_mode == "frame":
+                if self._frame_ee_radii is None or len(self._frame_ee_radii) <= len(result):
+                    raise ValueError(
+                        f"end effector {ee.object_name!r} requires per-frame "
+                        "end_effector_radii"
+                    )
+                radius = max(float(self._frame_ee_radii[len(result)]), 1e-3)
+            elif ee.radius_mode == "pad_pair":
                 a = self._require_body(ee.pad_bodies[0])
                 b = self._require_body(ee.pad_bodies[1])
                 # legacy semantics: radius = max(pad_distance / 2, 1e-3) — the
@@ -271,6 +301,15 @@ class SkeletonEngine:
             return (R_wc @ np.asarray(pos_m) + t_wc).astype(np.float32)
 
         keypoints: list[dict] = []
+        if spec.mode == "explicit":
+            return [
+                {
+                    "pos": to_world(self.data.xpos[self._require_body(item.body_name)]),
+                    "color": item.color,
+                    "parent": item.parent,
+                }
+                for item in spec.keypoints
+            ]
         if spec.mode == "full_tree":
             skip_ids = {self._require_body(name) for name in spec.skip_bodies}
             body_to_kp: dict[int, int] = {}
@@ -325,15 +364,26 @@ class SkeletonEngine:
             center = R_wc @ np.asarray(center_m) + t_wc
             a = self._require_body(ov.finger_bodies[0])
             b = self._require_body(ov.finger_bodies[1])
-            finger_delta = np.asarray(self.data.xpos[b] - self.data.xpos[a], dtype=np.float64)
-            width = float(np.linalg.norm(finger_delta))
-            if width > 1e-9:
-                # The XML finger bodies encode the physical closing direction.
-                # Deriving it from their FK positions keeps keypoints stable
-                # when the EE site's orientation is canonicalized for SH.
-                closing_axis = R_wc @ (finger_delta / width)
-            else:
+            if ov.width_index is not None:
+                if (
+                    self._frame_gripper_widths is None
+                    or len(self._frame_gripper_widths) <= ov.width_index
+                ):
+                    raise ValueError(
+                        f"gripper override {ov.ee_object_name!r} requires "
+                        f"gripper_widths[{ov.width_index}]"
+                    )
+                width = max(float(self._frame_gripper_widths[ov.width_index]), 0.0)
                 closing_axis = (R_wc @ rot_m)[:, ov.closing_axis]
+            else:
+                finger_delta = np.asarray(
+                    self.data.xpos[b] - self.data.xpos[a], dtype=np.float64
+                )
+                width = float(np.linalg.norm(finger_delta))
+                if width > 1e-9:
+                    closing_axis = R_wc @ (finger_delta / width)
+                else:
+                    closing_axis = (R_wc @ rot_m)[:, ov.closing_axis]
             half_width = width * 0.5
             keypoints[first_kp]["pos"] = (center - closing_axis * half_width).astype(np.float32)
             keypoints[second_kp]["pos"] = (center + closing_axis * half_width).astype(np.float32)

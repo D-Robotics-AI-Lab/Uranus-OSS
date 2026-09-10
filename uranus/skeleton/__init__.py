@@ -11,6 +11,7 @@ from .specs import (
     EESpec,
     GripperKeypointOverride,
     RigSpec,
+    SkeletonKeypointSpec,
     SkeletonSpec,
     rigid_transform,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "EESpec",
     "GripperKeypointOverride",
     "RigSpec",
+    "SkeletonKeypointSpec",
     "SkeletonSpec",
     "rigid_transform",
     "render_skeleton_frames",
