@@ -245,6 +245,29 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
         ]
         if missing_files:
             raise FileNotFoundError(f"GT videos not found: {missing_files}")
+        invalid_gt = []
+        short_gt = {}
+        for name, path in gt_video_paths.items():
+            if path.stat().st_size == 0:
+                invalid_gt.append(str(path))
+                continue
+            capture = cv2.VideoCapture(str(path))
+            try:
+                if not capture.isOpened():
+                    invalid_gt.append(str(path))
+                    continue
+                available_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                if available_frames < total_step_frames:
+                    short_gt[name] = available_frames
+            finally:
+                capture.release()
+        if invalid_gt:
+            raise ValueError(f"GT videos are empty or unreadable: {invalid_gt}")
+        if short_gt:
+            raise ValueError(
+                f"GT videos are shorter than the requested {total_step_frames} frames: "
+                f"{short_gt}"
+            )
 
     return {
         "camera_names": camera_names,
