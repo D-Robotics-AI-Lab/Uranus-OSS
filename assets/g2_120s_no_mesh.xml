@@ -1,0 +1,418 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="G2_120s_no_mesh">
+  <compiler eulerseq="XYZ" fitaabb="true" angle="radian" meshdir="robot/parts/meshes" autolimits="true" />
+  <option timestep="0.001" integrator="implicitfast" />
+  <default>
+    <default class="collision">
+            </default>
+    <default class="base_joint">
+      <joint damping="100.0" />
+    </default>
+    <default class="body_joint">
+      <joint damping="100.0" />
+    </default>
+    <default class="arm_joint">
+      <joint damping="100.0" />
+    </default>
+    <default class="hand_joint">
+      <joint type="hinge" limited="true" damping="0.3" armature="0.01" margin="0.01" frictionloss="0.1" />
+    </default>
+    <default class="plastic_visual">
+            </default>
+    <default class="plastic_collision">
+            </default>
+  </default>
+  <worldbody>
+    <body name="base_link" pos="0.0 0.0 0.0">
+      <inertial pos="-0.003487 0.006148 0.096659" quat="1 0 0 0" mass="73" diaginertia="1.295194 1.778283 2.471865" />
+      <joint name="fixed_base_joint" type="free" limited="false" actuatorfrclimited="false" />
+      <body name="body_site" pos="0 0 0" euler="0 0 0">
+        <body name="body_link1" pos="0.102 0 0.144">
+          <inertial pos="-0.00489401 0.000193107 0.175562" quat="0.951529 -0.00167118 0.000568439 0.307555" mass="20.7874" diaginertia="0.261468 0.260198 0.059575" />
+          <joint name="idx01_body_joint1" pos="0 0 0" axis="0 1 0" range="-1.06 0" />
+          <body name="body_link2" pos="0 0 0.36">
+            <inertial pos="0.00254034 -0.043702 0.185408" quat="0.706493 -0.00743404 -0.00727108 0.707643" mass="12.4098" diaginertia="0.208365 0.195289 0.0220707" />
+            <joint name="idx02_body_joint2" pos="0 0 0" axis="0 1 0" range="0 2.65" />
+            <body name="body_link3" pos="0 0 0.38">
+              <inertial pos="-0.000429684 -0.00641624 4.19234e-05" quat="0.996964 0.0579402 -0.00124734 -0.0519932" mass="7.34766" diaginertia="0.0253773 0.0245502 0.0236107" />
+              <joint name="idx03_body_joint3" pos="0 0 0" axis="0 1 0" range="-1.91 1.57" />
+              <body name="body_link4">
+                <inertial pos="-0.0714498 -6.54615e-05 0.0300405" quat="0.382564 0.598079 0.590375 0.383932" mass="6.23061" diaginertia="0.0315401 0.0286428 0.0240827" />
+                <joint name="idx04_body_joint4" pos="0 0 0" axis="1 0 0" range="-0.43 0.43" />
+                <body name="body_link5" pos="0 0 0.149">
+                  <inertial pos="-0.0244424 0.000202655 0.136945" quat="0.999987 -0.00278586 0.00415305 -0.000622614" mass="7.90088" diaginertia="0.0775108 0.0555698 0.0426905" />
+                  <joint name="idx05_body_joint5" pos="0 0 0" axis="0 0 1" range="-3.05 3.05" />
+                  <body name="arm_l_link1" pos="0 0.069 0.3085" quat="0.707107 -0.707107 0 0">
+                    <inertial pos="1.875e-05 0.006003 0.1438" quat="0.708546 0.0371413 -0.0376501 0.70368" mass="2.0926" diaginertia="0.00559611 0.00515641 0.00193958" />
+                    <joint name="idx21_arm_l_joint1" pos="0 0 0" axis="0 0 1" range="-3.1067 3.1067" actuatorfrcrange="-108 108" />
+                    <body name="arm_l_link2" pos="0 0 0.1745" quat="0.707105 0.707108 0 0">
+                      <inertial pos="-7.03e-06 0.05542 0.010995" quat="0.641173 0.767392 -0.00214053 0.00133687" mass="1.9432" diaginertia="0.0103546 0.00975036 0.00294632" />
+                      <joint name="idx22_arm_l_joint2" pos="0 0 0" axis="0 0 1" range="-2.0944 2.0944" actuatorfrcrange="-108 108" />
+                      <body name="arm_l_link3" quat="0.707105 -0.707108 0 0">
+                        <inertial pos="0.0087411 0.0019043 0.23487" quat="0.773926 -0.0373044 -0.0709906 0.628178" mass="1.6913" diaginertia="0.00691278 0.00661449 0.00151279" />
+                        <joint name="idx23_arm_l_joint3" pos="0 0 0" axis="0 0 1" range="-3.1067 3.1067" actuatorfrcrange="-66 66" />
+                        <body name="arm_l_link4" pos="0.018 0 0.287" quat="0.707105 0.707108 0 0">
+                          <inertial pos="-0.0086935 0.045984 0.011135" quat="0.621456 0.737295 -0.246853 0.0961863" mass="1.5332" diaginertia="0.0055184 0.00490878 0.00183112" />
+                          <joint name="idx24_arm_l_joint4" pos="0 0 0" axis="0 0 1" range="-2.5307 1.0472" actuatorfrcrange="-66 66" />
+                          <body name="arm_l_link5" pos="-0.018 0 0" quat="0.707105 -0.707108 0 0">
+                            <inertial pos="-0.00036467 0.0001479 0.19902" quat="0.999106 0.00345732 0.00652516 -0.0416219" mass="2.0095" diaginertia="0.00569947 0.0052757 0.00211221" />
+                            <joint name="idx25_arm_l_joint5" pos="0 0 0" axis="0 0 1" range="-3.1067 3.1067" actuatorfrcrange="-36 36" />
+                            <body name="arm_l_link6" pos="0 0 0.314" quat="0.707105 0.707108 0 0">
+                              <inertial pos="-0.004911 0.00027206 -8.14e-05" quat="0.999881 0.0107884 -0.0079053 -0.00774961" mass="0.67002" diaginertia="0.000489372 0.000400032 0.000369166" />
+                              <joint name="idx26_arm_l_joint6" pos="0 0 0" axis="0 0 1" range="-1.0472 1.0472" actuatorfrcrange="-36 36" />
+                              <body name="arm_l_link7" quat="0.499998 0.5 0.500002 0.5">
+                                <inertial pos="0.0451337 4.672e-05 0.00607482" quat="0.593322 0.386679 0.388741 0.589347" mass="0.31657" diaginertia="0.000673414 0.000570067 0.000333619" />
+                                <joint name="idx27_arm_l_joint7" pos="0 0 0" axis="0 0 1" range="-1.5708 1.5708" actuatorfrcrange="-36 36" />
+                                <body name="gripper_l_base_link" pos="0.095 0 0" quat="-0.5 0.5 -0.5 0.5">
+                                  <inertial pos="0.01778808 0.0585332 0.05714529" quat="0.5 0.5 0.5 0.5" mass="1.3757592" diaginertia="0.0028087 0.00130123 0.00279029" />
+                                  <body name="left_Left_01_Link" pos="-0.032553 0 0.10644" quat="-2.59734e-06 -2.59735e-06 0.707108 0.707105">
+                                    <inertial pos="0.00656388 0.0248503 -9.40817e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                    <joint name="left_Left_1_Joint" pos="0 0 0" axis="0 0 -1" range="0 1" actuatorfrcrange="-2 2" />
+                                    <body name="left_Left_00_Link" pos="0.01946 0.0129 0">
+                                      <inertial pos="0.00656388 0.0248503 -9.40817e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                      <joint name="left_Left_0_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                      <body name="left_Left_Support_Link" pos="-0.02888 0.04341 0">
+                                        <inertial pos="-0.0139043 0.0196639 0.00849572" quat="0.925305 0.325362 -0.105933 0.163488" mass="0.0173333" diaginertia="1.1732e-05 8.6297e-06 3.77139e-06" />
+                                        <joint name="left_Left_Support_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                        <body name="left_Left_Pad_Link" pos="-0.022056 0.044306 0" />
+                                      </body>
+                                    </body>
+                                  </body>
+                                  <body name="left_Left_2_Link" pos="-0.017 0 0.122" quat="-2.59734e-06 -2.59735e-06 0.707108 0.707105">
+                                    <inertial pos="-0.00438953 0.0248816 -2.55136e-05" quat="0.704468 0.705161 0.057196 0.0565907" mass="0.00803956" diaginertia="1.16929e-06 8.47368e-07 4.50153e-07" />
+                                    <joint name="left_Left_2_Joint" pos="0 0 0" axis="0 0 -1" range="-1 1" actuatorfrcrange="-10 10" />
+                                  </body>
+                                  <body name="left_Right_2_Link" pos="0.017 0 0.122" quat="0.707105 0.707108 0 0">
+                                    <inertial pos="-0.00438953 0.0248816 -2.55136e-05" quat="0.704468 0.705161 0.057196 0.0565907" mass="0.00803956" diaginertia="1.16929e-06 8.47368e-07 4.50153e-07" />
+                                    <joint name="left_Right_2_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                  </body>
+                                  <body name="left_Right_01_Link" pos="0.032553 0 0.10644" quat="0.707105 0.707108 0 0">
+                                    <inertial pos="0.00656388 0.0248503 -9.40812e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                    <joint name="left_Right_1_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                    <body name="left_Right_00_Link" pos="0.01946 0.0129 0">
+                                      <inertial pos="0.00656388 0.0248503 -9.40812e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                      <joint name="left_Right_0_Joint" pos="0 0 0" axis="0 0 -1" range="0 1" actuatorfrcrange="-2 2" />
+                                      <body name="left_Right_Support_Link" pos="-0.02888 0.04341 0">
+                                        <inertial pos="-0.0139043 0.0196639 0.00849572" quat="0.925305 0.325362 -0.105933 0.163488" mass="0.0173333" diaginertia="1.1732e-05 8.6297e-06 3.77139e-06" />
+                                        <joint name="left_Right_Support_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                        <body name="left_Right_Pad_Link" pos="-0.022056 0.044306 0" />
+                                      </body>
+                                    </body>
+                                  </body>
+                                  <site name="gripper_center" pos="0 0 0.23" euler="0 0 -1.5708" type="sphere" size="0.005" group="5" />
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                  <body name="arm_r_link1" pos="0 -0.069 0.3085" quat="0.707107 0.707107 0 0">
+                    <inertial pos="1.875e-05 0.006003 0.1438" quat="0.708546 0.0371413 -0.0376501 0.70368" mass="2.0926" diaginertia="0.00559611 0.00515641 0.00193958" />
+                    <joint name="idx61_arm_r_joint1" pos="0 0 0" axis="0 0 1" range="-3.1067 3.1067" actuatorfrcrange="-108 108" />
+                    <body name="arm_r_link2" pos="0 0 0.1745" quat="0.707107 0.707107 0 0">
+                      <inertial pos="-7.03e-06 0.05542 0.010995" quat="0.641173 0.767392 -0.00214053 0.00133687" mass="1.9432" diaginertia="0.0103546 0.00975036 0.00294632" />
+                      <joint name="idx62_arm_r_joint2" pos="0 0 0" axis="0 0 1" range="-2.0944 2.0944" actuatorfrcrange="-108 108" />
+                      <body name="arm_r_link3" quat="0.707107 -0.707107 0 0">
+                        <inertial pos="0.0087411 0.0019043 0.23487" quat="0.773926 -0.0373044 -0.0709906 0.628178" mass="1.6913" diaginertia="0.00691278 0.00661449 0.00151279" />
+                        <joint name="idx63_arm_r_joint3" pos="0 0 0" axis="0 0 1" range="-3.1067 3.1067" actuatorfrcrange="-66 66" />
+                        <body name="arm_r_link4" pos="0.018 0 0.287" quat="0.707107 0.707107 0 0">
+                          <inertial pos="-0.0086935 0.045984 0.011135" quat="0.621456 0.737295 -0.246853 0.0961863" mass="1.5332" diaginertia="0.0055184 0.00490878 0.00183112" />
+                          <joint name="idx64_arm_r_joint4" pos="0 0 0" axis="0 0 1" range="-2.5307 1.0472" actuatorfrcrange="-66 66" />
+                          <body name="arm_r_link5" pos="-0.018 0 0" quat="0.707107 -0.707107 0 0">
+                            <inertial pos="0.00036663 -0.00041429 0.198891" quat="0.999078 -0.00435039 -0.00655822 -0.0422006" mass="1.9854" diaginertia="0.00567885 0.00526075 0.00209418" />
+                            <joint name="idx65_arm_r_joint5" pos="0 0 0" axis="0 0 1" range="-3.1067 3.1067" actuatorfrcrange="-36 36" />
+                            <body name="arm_r_link6" pos="0 0 0.314" quat="0.707107 0.707107 0 0">
+                              <inertial pos="-0.00458177 -0.00027029 9.098e-05" quat="0.99986 0.0119778 0.00849363 0.00798016" mass="0.645948" diaginertia="0.000477145 0.000391895 0.000361099" />
+                              <joint name="idx66_arm_r_joint6" pos="0 0 0" axis="0 0 1" range="-1.0472 1.0472" actuatorfrcrange="-36 36" />
+                              <body name="arm_r_link7" quat="0.5 0.5 0.5 0.5">
+                                <inertial pos="0.0451337 4.672e-05 0.00607482" quat="0.593322 0.386679 0.388741 0.589347" mass="0.31658" diaginertia="0.000673414 0.000570067 0.000333619" />
+                                <joint name="idx67_arm_r_joint7" pos="0 0 0" axis="0 0 1" range="-1.5708 1.5708" actuatorfrcrange="-36 36" />
+                                <body name="gripper_r_base_link" pos="0.095 0 0" quat="-0.5 0.5 -0.5 0.5">
+                                  <inertial pos="0.01778808 0.0585332 0.05714529" quat="0.5 0.5 0.5 0.5" mass="1.3757592" diaginertia="0.0028087 0.00130123 0.00279029" />
+                                  <body name="right_Left_01_Link" pos="-0.032553 0 0.10644" quat="-2.59734e-06 -2.59735e-06 0.707108 0.707105">
+                                    <inertial pos="0.00656388 0.0248503 -9.40817e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                    <joint name="right_Left_1_Joint" pos="0 0 0" axis="0 0 -1" range="0 1" actuatorfrcrange="-2 2" />
+                                    <body name="right_Left_00_Link" pos="0.01946 0.0129 0">
+                                      <inertial pos="0.00656388 0.0248503 -9.40817e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                      <joint name="right_Left_0_Joint" pos="0 0 0" axis="0 0 -1" range="0 1" actuatorfrcrange="-2 2" />
+                                      <body name="right_Left_Support_Link" pos="-0.02888 0.04341 0">
+                                        <inertial pos="-0.0139043 0.0196639 0.00849572" quat="0.925305 0.325362 -0.105933 0.163488" mass="0.0173333" diaginertia="1.1732e-05 8.6297e-06 3.77139e-06" />
+                                        <joint name="right_Left_Support_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                        <body name="right_Left_Pad_Link" pos="-0.022056 0.044306 0" />
+                                      </body>
+                                    </body>
+                                  </body>
+                                  <body name="right_Left_2_Link" pos="-0.017 0 0.122" quat="-2.59734e-06 -2.59735e-06 0.707108 0.707105">
+                                    <inertial pos="-0.00438953 0.0248816 -2.55136e-05" quat="0.704468 0.705161 0.057196 0.0565907" mass="0.00803956" diaginertia="1.16929e-06 8.47368e-07 4.50153e-07" />
+                                    <joint name="right_Left_2_Joint" pos="0 0 0" axis="0 0 -1" range="-1 1" actuatorfrcrange="-10 10" />
+                                  </body>
+                                  <body name="right_Right_2_Link" pos="0.017 0 0.122" quat="0.707105 0.707108 0 0">
+                                    <inertial pos="-0.00438953 0.0248816 -2.55136e-05" quat="0.704468 0.705161 0.057196 0.0565907" mass="0.00803956" diaginertia="1.16929e-06 8.47368e-07 4.50153e-07" />
+                                    <joint name="right_Right_2_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                  </body>
+                                  <body name="right_Right_01_Link" pos="0.032553 0 0.10644" quat="0.707105 0.707108 0 0">
+                                    <inertial pos="0.00656388 0.0248503 -9.40812e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                    <joint name="right_Right_1_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                    <body name="right_Right_00_Link" pos="0.01946 0.0129 0">
+                                      <inertial pos="0.00656388 0.0248503 -9.40812e-10" quat="0.33744 0.621397 -0.33744 0.621397" mass="0.0112899" diaginertia="2.47457e-06 2.38651e-06 9.79983e-07" />
+                                      <joint name="right_Right_0_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                      <body name="right_Right_Support_Link" pos="-0.02888 0.04341 0">
+                                        <inertial pos="-0.0139043 0.0196639 0.00849572" quat="0.925305 0.325362 -0.105933 0.163488" mass="0.0173333" diaginertia="1.1732e-05 8.6297e-06 3.77139e-06" />
+                                        <joint name="right_Right_Support_Joint" pos="0 0 0" axis="0 0 1" range="-1 1" actuatorfrcrange="-10 10" />
+                                        <body name="right_Right_Pad_Link" pos="-0.022056 0.044306 0" />
+                                      </body>
+                                    </body>
+                                  </body>
+                                  <site name="right_gripper_center" pos="0 0 0.227" euler="0 0 -1.5708" type="sphere" size="0.005" group="5" />
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                  <body name="head_link1" pos="-0.013 0 0.496">
+                    <inertial pos="0.00424601 -1.36432e-07 -0.0288855" quat="0.704159 -0.0648528 -0.0648618 0.704093" mass="0.245638" diaginertia="0.000306992 0.000302836 8.22483e-05" />
+                    <joint name="idx11_head_joint1" pos="0 0 0" axis="0 0 1" range="-1.57 1.57" />
+                    <body name="head_link2" pos="0.03335 0 0.07">
+                      <inertial pos="-0.0363591 -0.000333631 -0.00246318" quat="0.704707 0.705403 0.0594704 -0.0475286" mass="0.0944987" diaginertia="5.66986e-05 5.01493e-05 3.80384e-05" />
+                      <joint name="idx12_head_joint2" pos="0 0 0" axis="1 0 0" range="-0.349 0.349" />
+                      <body name="head_link3" pos="-0.03035 0 0">
+                        <inertial pos="-0.00327293 2.14734e-05 0.0163618" quat="-0.000248838 0.699252 2.07117e-06 0.714875" mass="17.8197" diaginertia="0.0712727 0.0558097 0.0456037" />
+                        <joint name="idx13_head_joint3" pos="0 0 0" axis="0 1 0" range="-0.523 0.523" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="chassis_site" pos="0 0 0" euler="0 0 0">
+        <body name="chassis_lwheel_front_link1" pos="0.23 0.218 0.16675">
+          <inertial pos="4.8347e-05 -0.021386 -0.055149" quat="0.681263 -0.208432 0.206514 0.670663" mass="0.59301" diaginertia="0.00114775 0.001129 0.000294904" />
+          <joint name="idx111_chassis_lwheel_front_joint1" pos="0 0 0" axis="0 0 1" range="-2.97 2.97" />
+          <body name="chassis_lwheel_front_link2" pos="0 -5e-05 -0.13675">
+            <inertial pos="-2.3442e-06 -0.0013086 1.0892e-05" quat="0.487628 0.512096 0.512035 0.487644" mass="3.6283" diaginertia="0.010779 0.0058842 0.0058835" />
+            <joint name="idx112_chassis_lwheel_front_joint2" pos="0 0 0" axis="0 1 0" />
+          </body>
+        </body>
+        <body name="chassis_rwheel_front_link1" pos="0.23 -0.218 0.16675">
+          <inertial pos="-4.8347e-05 0.021386 -0.055149" quat="0.681263 0.208432 -0.206514 0.670663" mass="0.59301" diaginertia="0.00114775 0.001129 0.000294904" />
+          <joint name="idx131_chassis_rwheel_front_joint1" pos="0 0 0" axis="0 0 1" range="-2.97 2.97" />
+          <body name="chassis_rwheel_front_link2" pos="0 5e-05 -0.13675">
+            <inertial pos="2.3442e-06 0.0013086 1.0892e-05" quat="0.512096 0.487628 0.487644 0.512035" mass="3.6283" diaginertia="0.010779 0.0058842 0.0058835" />
+            <joint name="idx132_chassis_rwheel_front_joint2" pos="0 0 0" axis="0 1 0" />
+          </body>
+        </body>
+        <body name="chassis_rwheel_rear_link1" pos="-0.23 -0.218 0.16675">
+          <inertial pos="-4.8347e-05 0.021386 -0.055149" quat="0.681263 0.208432 -0.206514 0.670663" mass="0.59301" diaginertia="0.00114775 0.001129 0.000294904" />
+          <joint name="idx141_chassis_rwheel_rear_joint1" pos="0 0 0" axis="0 0 1" range="-2.97 2.97" />
+          <body name="chassis_rwheel_rear_link2" pos="0 5e-05 -0.13675">
+            <inertial pos="2.3442e-06 0.0013086 1.0892e-05" quat="0.512096 0.487628 0.487644 0.512035" mass="3.6283" diaginertia="0.010779 0.0058842 0.0058835" />
+            <joint name="idx142_chassis_rwheel_rear_joint2" pos="0 0 0" axis="0 1 0" />
+          </body>
+        </body>
+        <body name="chassis_lwheel_rear_link1" pos="-0.23 0.218 0.16675">
+          <inertial pos="4.8347e-05 -0.021386 -0.055149" quat="0.681263 -0.208432 0.206514 0.670663" mass="0.59301" diaginertia="0.00114775 0.001129 0.000294904" />
+          <joint name="idx121_chassis_lwheel_rear_joint1" pos="0 0 0" axis="0 0 1" range="-2.97 2.97" />
+          <body name="chassis_lwheel_rear_link2" pos="0 -5e-05 -0.13675">
+            <inertial pos="-2.3442e-06 -0.0013086 1.0892e-05" quat="0.487628 0.512096 0.512035 0.487644" mass="3.6283" diaginertia="0.010779 0.0058842 0.0058835" />
+            <joint name="idx122_chassis_lwheel_rear_joint2" pos="0 0 0" axis="0 1 0" />
+          </body>
+        </body>
+      </body>
+      <site name="imu_site" pos="0 0 0" size="0.01" />
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="position_idx01_body_joint1" joint="idx01_body_joint1" kp="20000" kv="6000" />
+    <position name="position_idx02_body_joint2" joint="idx02_body_joint2" kp="20000" kv="6000" />
+    <position name="position_idx03_body_joint3" joint="idx03_body_joint3" kp="20000" kv="6000" />
+    <position name="position_idx04_body_joint4" joint="idx04_body_joint4" kp="20000" kv="6000" />
+    <position name="position_idx05_body_joint5" joint="idx05_body_joint5" kp="20000" kv="6000" />
+    <position name="position_idx11_head_joint1" joint="idx11_head_joint1" kp="1500" kv="150" />
+    <position name="position_idx12_head_joint2" joint="idx12_head_joint2" kp="1500" kv="150" />
+    <position name="position_idx13_head_joint3" joint="idx13_head_joint3" kp="1500" kv="150" />
+    <motor name="motor_idx01_body_joint1" joint="idx01_body_joint1" ctrlrange="-1200 1200" />
+    <motor name="motor_idx02_body_joint2" joint="idx02_body_joint2" ctrlrange="-1200 1200" />
+    <motor name="motor_idx03_body_joint3" joint="idx03_body_joint3" ctrlrange="-1200 1200" />
+    <motor name="motor_idx04_body_joint4" joint="idx04_body_joint4" ctrlrange="-1200 1200" />
+    <motor name="motor_idx05_body_joint5" joint="idx05_body_joint5" ctrlrange="-1200 1200" />
+    <motor name="motor_idx11_head_joint1" joint="idx11_head_joint1" ctrlrange="-1200 1200" />
+    <motor name="motor_idx12_head_joint2" joint="idx12_head_joint2" ctrlrange="-1200 1200" />
+    <motor name="motor_idx13_head_joint3" joint="idx13_head_joint3" ctrlrange="-1200 1200" />
+  </actuator>
+  <sensor>
+    <framequat name="imu_quat_sensor" objtype="site" objname="imu_site" />
+    <gyro name="imu_gyro" site="imu_site" />
+    <accelerometer name="imu_accel" site="imu_site" />
+    <jointpos name="jointpos_idx01_body_joint1" joint="idx01_body_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx02_body_joint2" joint="idx02_body_joint2" noise="0.0" />
+    <jointpos name="jointpos_idx03_body_joint3" joint="idx03_body_joint3" noise="0.0" />
+    <jointpos name="jointpos_idx04_body_joint4" joint="idx04_body_joint4" noise="0.0" />
+    <jointpos name="jointpos_idx05_body_joint5" joint="idx05_body_joint5" noise="0.0" />
+    <jointpos name="jointpos_idx11_head_joint1" joint="idx11_head_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx12_head_joint2" joint="idx12_head_joint2" noise="0.0" />
+    <jointpos name="jointpos_idx13_head_joint3" joint="idx13_head_joint3" noise="0.0" />
+    <jointvel name="jointvel_idx01_body_joint1" joint="idx01_body_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx02_body_joint2" joint="idx02_body_joint2" noise="0.0" />
+    <jointvel name="jointvel_idx03_body_joint3" joint="idx03_body_joint3" noise="0.0" />
+    <jointvel name="jointvel_idx04_body_joint4" joint="idx04_body_joint4" noise="0.0" />
+    <jointvel name="jointvel_idx05_body_joint5" joint="idx05_body_joint5" noise="0.0" />
+    <jointvel name="jointvel_idx11_head_joint1" joint="idx11_head_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx12_head_joint2" joint="idx12_head_joint2" noise="0.0" />
+    <jointvel name="jointvel_idx13_head_joint3" joint="idx13_head_joint3" noise="0.0" />
+    <jointactuatorfrc name="torque_idx01_body_joint1" joint="idx01_body_joint1" noise="0.0" />
+    <jointactuatorfrc name="torque_idx02_body_joint2" joint="idx02_body_joint2" noise="0.0" />
+    <jointactuatorfrc name="torque_idx03_body_joint3" joint="idx03_body_joint3" noise="0.0" />
+    <jointactuatorfrc name="torque_idx04_body_joint4" joint="idx04_body_joint4" noise="0.0" />
+    <jointactuatorfrc name="torque_idx05_body_joint5" joint="idx05_body_joint5" noise="0.0" />
+    <jointactuatorfrc name="torque_idx11_head_joint1" joint="idx11_head_joint1" noise="0.0" />
+    <jointactuatorfrc name="torque_idx12_head_joint2" joint="idx12_head_joint2" noise="0.0" />
+    <jointactuatorfrc name="torque_idx13_head_joint3" joint="idx13_head_joint3" noise="0.0" />
+  </sensor>
+  <actuator>
+    <position name="motor_idx111_chassis_lwheel_front_joint1" joint="idx111_chassis_lwheel_front_joint1" kp="1000" kv="80" />
+    <velocity name="motor_idx112_chassis_lwheel_front_joint2" joint="idx112_chassis_lwheel_front_joint2" kv="10" />
+    <position name="motor_idx121_chassis_lwheel_rear_joint1" joint="idx121_chassis_lwheel_rear_joint1" kp="1000" kv="80" />
+    <velocity name="motor_idx122_chassis_lwheel_rear_joint2" joint="idx122_chassis_lwheel_rear_joint2" kv="10" />
+    <position name="motor_idx131_chassis_rwheel_front_joint1" joint="idx131_chassis_rwheel_front_joint1" kp="1000" kv="80" />
+    <velocity name="motor_idx132_chassis_rwheel_front_joint2" joint="idx132_chassis_rwheel_front_joint2" kv="10" />
+    <position name="motor_idx141_chassis_rwheel_rear_joint1" joint="idx141_chassis_rwheel_rear_joint1" kp="1000" kv="80" />
+    <velocity name="motor_idx142_chassis_rwheel_rear_joint2" joint="idx142_chassis_rwheel_rear_joint2" kv="10" />
+  </actuator>
+  <sensor>
+    <jointpos name="jointpos_idx111_chassis_lwheel_front_joint1" joint="idx111_chassis_lwheel_front_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx112_chassis_lwheel_front_joint2" joint="idx112_chassis_lwheel_front_joint2" noise="0.0" cutoff="3.14" />
+    <jointpos name="jointpos_idx121_chassis_lwheel_rear_joint1" joint="idx121_chassis_lwheel_rear_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx122_chassis_lwheel_rear_joint2" joint="idx122_chassis_lwheel_rear_joint2" noise="0.0" cutoff="3.14" />
+    <jointpos name="jointpos_idx131_chassis_rwheel_front_joint1" joint="idx131_chassis_rwheel_front_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx132_chassis_rwheel_front_joint2" joint="idx132_chassis_rwheel_front_joint2" noise="0.0" cutoff="3.14" />
+    <jointpos name="jointpos_idx141_chassis_rwheel_rear_joint1" joint="idx141_chassis_rwheel_rear_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx142_chassis_rwheel_rear_joint2" joint="idx142_chassis_rwheel_rear_joint2" noise="0.0" cutoff="3.14" />
+    <jointvel name="jointvel_idx111_chassis_lwheel_front_joint1" joint="idx111_chassis_lwheel_front_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx112_chassis_lwheel_front_joint2" joint="idx112_chassis_lwheel_front_joint2" noise="0.0" />
+    <jointvel name="jointvel_idx121_chassis_lwheel_rear_joint1" joint="idx121_chassis_lwheel_rear_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx122_chassis_lwheel_rear_joint2" joint="idx122_chassis_lwheel_rear_joint2" noise="0.0" />
+    <jointvel name="jointvel_idx131_chassis_rwheel_front_joint1" joint="idx131_chassis_rwheel_front_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx132_chassis_rwheel_front_joint2" joint="idx132_chassis_rwheel_front_joint2" noise="0.0" />
+    <jointvel name="jointvel_idx141_chassis_rwheel_rear_joint1" joint="idx141_chassis_rwheel_rear_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx142_chassis_rwheel_rear_joint2" joint="idx142_chassis_rwheel_rear_joint2" noise="0.0" />
+  </sensor>
+  <actuator>
+    <position name="position_idx21_arm_l_joint1" joint="idx21_arm_l_joint1" kp="10000" kv="400" />
+    <position name="position_idx22_arm_l_joint2" joint="idx22_arm_l_joint2" kp="10000" kv="400" />
+    <position name="position_idx23_arm_l_joint3" joint="idx23_arm_l_joint3" kp="10000" kv="160" />
+    <position name="position_idx24_arm_l_joint4" joint="idx24_arm_l_joint4" kp="10000" kv="160" />
+    <position name="position_idx25_arm_l_joint5" joint="idx25_arm_l_joint5" kp="10000" kv="120" />
+    <position name="position_idx26_arm_l_joint6" joint="idx26_arm_l_joint6" kp="10000" kv="120" />
+    <position name="position_idx27_arm_l_joint7" joint="idx27_arm_l_joint7" kp="10000" kv="120" />
+    <position name="position_idx61_arm_r_joint1" joint="idx61_arm_r_joint1" kp="10000" kv="400" />
+    <position name="position_idx62_arm_r_joint2" joint="idx62_arm_r_joint2" kp="10000" kv="400" />
+    <position name="position_idx63_arm_r_joint3" joint="idx63_arm_r_joint3" kp="10000" kv="160" />
+    <position name="position_idx64_arm_r_joint4" joint="idx64_arm_r_joint4" kp="10000" kv="160" />
+    <position name="position_idx65_arm_r_joint5" joint="idx65_arm_r_joint5" kp="10000" kv="120" />
+    <position name="position_idx66_arm_r_joint6" joint="idx66_arm_r_joint6" kp="10000" kv="120" />
+    <position name="position_idx67_arm_r_joint7" joint="idx67_arm_r_joint7" kp="10000" kv="120" />
+    <motor name="motor_idx21_arm_l_joint1" joint="idx21_arm_l_joint1" ctrlrange="-1200 1200" />
+    <motor name="motor_idx22_arm_l_joint2" joint="idx22_arm_l_joint2" ctrlrange="-1200 1200" />
+    <motor name="motor_idx23_arm_l_joint3" joint="idx23_arm_l_joint3" ctrlrange="-1200 1200" />
+    <motor name="motor_idx24_arm_l_joint4" joint="idx24_arm_l_joint4" ctrlrange="-1200 1200" />
+    <motor name="motor_idx25_arm_l_joint5" joint="idx25_arm_l_joint5" ctrlrange="-1200 1200" />
+    <motor name="motor_idx26_arm_l_joint6" joint="idx26_arm_l_joint6" ctrlrange="-1200 1200" />
+    <motor name="motor_idx27_arm_l_joint7" joint="idx27_arm_l_joint7" ctrlrange="-1200 1200" />
+    <motor name="motor_idx61_arm_r_joint1" joint="idx61_arm_r_joint1" ctrlrange="-1200 1200" />
+    <motor name="motor_idx62_arm_r_joint2" joint="idx62_arm_r_joint2" ctrlrange="-1200 1200" />
+    <motor name="motor_idx63_arm_r_joint3" joint="idx63_arm_r_joint3" ctrlrange="-1200 1200" />
+    <motor name="motor_idx64_arm_r_joint4" joint="idx64_arm_r_joint4" ctrlrange="-1200 1200" />
+    <motor name="motor_idx65_arm_r_joint5" joint="idx65_arm_r_joint5" ctrlrange="-1200 1200" />
+    <motor name="motor_idx66_arm_r_joint6" joint="idx66_arm_r_joint6" ctrlrange="-1200 1200" />
+    <motor name="motor_idx67_arm_r_joint7" joint="idx67_arm_r_joint7" ctrlrange="-1200 1200" />
+  </actuator>
+  <sensor>
+    <jointpos name="jointpos_idx21_arm_l_joint1" joint="idx21_arm_l_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx22_arm_l_joint2" joint="idx22_arm_l_joint2" noise="0.0" />
+    <jointpos name="jointpos_idx23_arm_l_joint3" joint="idx23_arm_l_joint3" noise="0.0" />
+    <jointpos name="jointpos_idx24_arm_l_joint4" joint="idx24_arm_l_joint4" noise="0.0" />
+    <jointpos name="jointpos_idx25_arm_l_joint5" joint="idx25_arm_l_joint5" noise="0.0" />
+    <jointpos name="jointpos_idx26_arm_l_joint6" joint="idx26_arm_l_joint6" noise="0.0" />
+    <jointpos name="jointpos_idx27_arm_l_joint7" joint="idx27_arm_l_joint7" noise="0.0" />
+    <jointpos name="jointpos_idx61_arm_r_joint1" joint="idx61_arm_r_joint1" noise="0.0" />
+    <jointpos name="jointpos_idx62_arm_r_joint2" joint="idx62_arm_r_joint2" noise="0.0" />
+    <jointpos name="jointpos_idx63_arm_r_joint3" joint="idx63_arm_r_joint3" noise="0.0" />
+    <jointpos name="jointpos_idx64_arm_r_joint4" joint="idx64_arm_r_joint4" noise="0.0" />
+    <jointpos name="jointpos_idx65_arm_r_joint5" joint="idx65_arm_r_joint5" noise="0.0" />
+    <jointpos name="jointpos_idx66_arm_r_joint6" joint="idx66_arm_r_joint6" noise="0.0" />
+    <jointpos name="jointpos_idx67_arm_r_joint7" joint="idx67_arm_r_joint7" noise="0.0" />
+    <jointvel name="jointvel_idx21_arm_l_joint1" joint="idx21_arm_l_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx22_arm_l_joint2" joint="idx22_arm_l_joint2" noise="0.0" />
+    <jointvel name="jointvel_idx23_arm_l_joint3" joint="idx23_arm_l_joint3" noise="0.0" />
+    <jointvel name="jointvel_idx24_arm_l_joint4" joint="idx24_arm_l_joint4" noise="0.0" />
+    <jointvel name="jointvel_idx25_arm_l_joint5" joint="idx25_arm_l_joint5" noise="0.0" />
+    <jointvel name="jointvel_idx26_arm_l_joint6" joint="idx26_arm_l_joint6" noise="0.0" />
+    <jointvel name="jointvel_idx27_arm_l_joint7" joint="idx27_arm_l_joint7" noise="0.0" />
+    <jointvel name="jointvel_idx61_arm_r_joint1" joint="idx61_arm_r_joint1" noise="0.0" />
+    <jointvel name="jointvel_idx62_arm_r_joint2" joint="idx62_arm_r_joint2" noise="0.0" />
+    <jointvel name="jointvel_idx63_arm_r_joint3" joint="idx63_arm_r_joint3" noise="0.0" />
+    <jointvel name="jointvel_idx64_arm_r_joint4" joint="idx64_arm_r_joint4" noise="0.0" />
+    <jointvel name="jointvel_idx65_arm_r_joint5" joint="idx65_arm_r_joint5" noise="0.0" />
+    <jointvel name="jointvel_idx66_arm_r_joint6" joint="idx66_arm_r_joint6" noise="0.0" />
+    <jointvel name="jointvel_idx67_arm_r_joint7" joint="idx67_arm_r_joint7" noise="0.0" />
+    <jointactuatorfrc name="torque_idx21_arm_l_joint1" joint="idx21_arm_l_joint1" noise="0.0" />
+    <jointactuatorfrc name="torque_idx22_arm_l_joint2" joint="idx22_arm_l_joint2" noise="0.0" />
+    <jointactuatorfrc name="torque_idx23_arm_l_joint3" joint="idx23_arm_l_joint3" noise="0.0" />
+    <jointactuatorfrc name="torque_idx24_arm_l_joint4" joint="idx24_arm_l_joint4" noise="0.0" />
+    <jointactuatorfrc name="torque_idx25_arm_l_joint5" joint="idx25_arm_l_joint5" noise="0.0" />
+    <jointactuatorfrc name="torque_idx26_arm_l_joint6" joint="idx26_arm_l_joint6" noise="0.0" />
+    <jointactuatorfrc name="torque_idx27_arm_l_joint7" joint="idx27_arm_l_joint7" noise="0.0" />
+    <jointactuatorfrc name="torque_idx61_arm_r_joint1" joint="idx61_arm_r_joint1" noise="0.0" />
+    <jointactuatorfrc name="torque_idx62_arm_r_joint2" joint="idx62_arm_r_joint2" noise="0.0" />
+    <jointactuatorfrc name="torque_idx63_arm_r_joint3" joint="idx63_arm_r_joint3" noise="0.0" />
+    <jointactuatorfrc name="torque_idx64_arm_r_joint4" joint="idx64_arm_r_joint4" noise="0.0" />
+    <jointactuatorfrc name="torque_idx65_arm_r_joint5" joint="idx65_arm_r_joint5" noise="0.0" />
+    <jointactuatorfrc name="torque_idx66_arm_r_joint6" joint="idx66_arm_r_joint6" noise="0.0" />
+    <jointactuatorfrc name="torque_idx67_arm_r_joint7" joint="idx67_arm_r_joint7" noise="0.0" />
+  </sensor>
+  <contact>
+
+    </contact>
+  <actuator>
+
+    </actuator>
+  <equality>
+    <joint joint1="right_Left_0_Joint" joint2="right_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="right_Left_Support_Joint" joint2="right_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="right_Left_2_Joint" joint2="right_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="right_Right_2_Joint" joint2="right_Left_1_Joint" polycoef="0 -1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="right_Right_1_Joint" joint2="right_Left_1_Joint" polycoef="0 -1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="right_Right_0_Joint" joint2="right_Left_1_Joint" polycoef="0 -1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="right_Right_Support_Joint" joint2="right_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="left_Left_0_Joint" joint2="left_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="left_Left_Support_Joint" joint2="left_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="left_Left_2_Joint" joint2="left_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="left_Right_2_Joint" joint2="left_Left_1_Joint" polycoef="0 -1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="left_Right_1_Joint" joint2="left_Left_1_Joint" polycoef="0 -1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="left_Right_0_Joint" joint2="left_Left_1_Joint" polycoef="0 -1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="left_Right_Support_Joint" joint2="left_Left_1_Joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+  </equality>
+  <sensor>
+
+    </sensor>
+  <contact>
+
+    </contact>
+  <actuator>
+
+    </actuator>
+  <equality>
+
+    </equality>
+  <sensor>
+
+    </sensor>
+</mujoco>

@@ -91,13 +91,16 @@ def parse_dtype(dtype_name: str) -> torch.dtype:
 def parse_frame(frame) -> tuple[np.ndarray, np.ndarray | None]:
     """Split one step frame into ``(qpos, robot2world | None)``.
 
-    Accepts a bare qpos vector or a dict
-    ``{"observation.state": ..., "observation.robot2world_trans"?: ...}``.
+    Accepts a bare qpos vector or a dict. v3 dictionaries may carry the
+    generated full-qpos cache as ``mujoco_qpos`` while observation.state stays
+    compact/native. The cache is normally injected by ``main.load_sample``
+    from the sidecar ``mujoco_qpos.json``.
     """
     if isinstance(frame, dict):
-        qpos = np.asarray(frame["observation.state"], dtype=np.float64)
+        state = frame.get("mujoco_qpos", frame.get("qpos", frame["observation.state"]))
+        state = np.asarray(state, dtype=np.float64)
         T = frame.get("observation.robot2world_trans")
-        return qpos, (np.asarray(T, dtype=np.float64) if T is not None else None)
+        return state, (np.asarray(T, dtype=np.float64) if T is not None else None)
     return np.asarray(frame, dtype=np.float64), None
 
 
@@ -153,6 +156,7 @@ class UranusRunner:
         self._models: dict[str, Any] | None = None
         self._state: UranusStreamState | None = None
         self._meta: _SessionMeta | None = None
+        self._last_skeleton_frames: dict[str, list[np.ndarray]] = {}
 
     @property
     def models(self) -> dict[str, Any]:
@@ -166,6 +170,7 @@ class UranusRunner:
         """Release the active session state (GPU tensors). Models stay loaded."""
         self._state = None
         self._meta = None
+        self._last_skeleton_frames = {}
 
     # ---------------------------------------------------------------- create
 
@@ -266,6 +271,7 @@ class UranusRunner:
         )
 
         self._state = state
+        self._last_skeleton_frames = {}
         self._meta = _SessionMeta(
             camera_names=camera_names,
             engine=engine,
@@ -372,6 +378,7 @@ class UranusRunner:
         stream_config = self._build_stream_config(num_cameras=len(camera_names))
         state = self._state
         output_chunks: list[torch.Tensor] = []
+        step_skeleton_frames = {name: [] for name in camera_names}
         for start in range(0, actual_steps, chunk_size):
             end = start + chunk_size
             chunk_qpos = qpos_sequence[start:end]
@@ -406,6 +413,9 @@ class UranusRunner:
                     sh_corrections=sh_corrections,
                 )
                 skeleton_images.append(video)
+                step_skeleton_frames[camera.name].extend(
+                    frame.permute(1, 2, 0).cpu().numpy() for frame in video
+                )
 
             camera_extrinsics = per_camera_extrinsics
             camera_intrinsics = [
@@ -443,8 +453,14 @@ class UranusRunner:
             raise RuntimeError("_run_stream returned empty results")
 
         self._state = state
+        self._last_skeleton_frames = step_skeleton_frames
         video = torch.cat(output_chunks, dim=3).contiguous()  # dim 3 is time
         return video_to_frames(video, camera_names)
+
+    @property
+    def last_skeleton_frames(self) -> dict[str, list[np.ndarray]]:
+        """Skeleton RGB frames rendered during the most recent ``step`` call."""
+        return {name: list(frames) for name, frames in self._last_skeleton_frames.items()}
 
     # ---------------------------------------------------------------- internals
 

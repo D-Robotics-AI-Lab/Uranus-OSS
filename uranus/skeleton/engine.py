@@ -4,11 +4,11 @@ Replaces the per-robot ``UnifiedRobot`` subclasses.  One engine is built per
 session (``create``) and persists for its lifetime; every ``step`` frame goes
 through ``set_state`` once and all cameras share the resulting FK.
 
-Frame conventions (skeleton_refactor_plan.md §2):
+Frame conventions:
 
-    p_w      = T @ C @ p_model                    (points)
+    p_w      = T @ C @ p_model                    (points; C is v2-only)
     M_B_w(t) = T @ C @ M_B_model(t)               (body poses)
-    E_cam_w(t) = E_rel @ inv(M_B_w(t))            (camera extrinsics)
+    E_cam_cv(t) = F @ inv(T @ M_cam_mjcf(t))      (XML camera extrinsics)
 
 where ``T`` is the per-frame robot-to-world transform (data, default I) and
 ``C`` is the create-time ``world_from_model`` (default I).  The composed
@@ -33,6 +33,11 @@ from .specs import (
 )
 
 
+# MuJoCo cameras look along local -Z with local +Y up.  The renderer and
+# dataset calibration use the OpenCV convention (+Z forward, +Y down).
+_MUJOCO_TO_CV = np.diag([1.0, -1.0, -1.0, 1.0])
+
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -54,7 +59,11 @@ class SkeletonEngine:
         self.model = mujoco.MjModel.from_xml_path(rig.mjcf_path)
         self.data = mujoco.MjData(self.model)
 
-        self._C = np.asarray(rig.world_from_model, dtype=np.float64)
+        self._C = (
+            np.asarray(rig.world_from_model, dtype=np.float64)
+            if rig.world_from_model is not None
+            else np.eye(4, dtype=np.float64)
+        )
         self._T = np.eye(4, dtype=np.float64)  # last set robot2world (default I)
         self._has_state = False
 
@@ -62,8 +71,14 @@ class SkeletonEngine:
         self._body_ids: dict[str, int] = {}
         self._site_ids: dict[str, int] = {}
         self._mount_ids: list[int | None] = []
+        self._camera_ids: dict[str, int] = {}
 
         for camera in rig.cameras:
+            camera_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera.name)
+            if camera_id >= 0:
+                self._camera_ids[camera.name] = camera_id
+            elif camera.extrinsic_rel is None:
+                _require(False, f"camera {camera.name!r} not found in {rig.mjcf_path}")
             if camera.mount_body is not None:
                 self._mount_ids.append(self._require_body(camera.mount_body))
             else:
@@ -118,11 +133,10 @@ class SkeletonEngine:
     # ---------------------------------------------------------------- state
 
     def set_state(self, qpos, robot2world=None) -> None:
-        """Set the full qpos vector (with joint-range clipping) and run FK.
+        """Set the full qpos vector and run FK.
 
-        ``qpos`` must be the complete model qpos (length ``model.nq``) — the
-        format produced by the migration script.  ``robot2world`` is the
-        optional per-frame robot-to-world 4x4 (default identity).
+        ``qpos`` must be the complete model qpos vector. ``robot2world`` is
+        the optional per-frame robot-to-world 4x4 (default identity).
         """
         vector = np.asarray(qpos, dtype=np.float64).reshape(-1)
         _require(
@@ -166,20 +180,32 @@ class SkeletonEngine:
     def compose_camera_extrinsics(self) -> list[np.ndarray]:
         """World-to-camera 4x4 for every rig camera, in rig order.
 
-        Mounted: E_cam_w = E_rel @ inv(T @ C @ M_B_model).
-        External: mount is the world, E_cam_w = E_rel (constant).
+        New v3 XML cameras are converted from MuJoCo's camera frame to the
+        OpenCV/data frame.  Legacy v2 ``CameraSpec`` fields remain supported.
         """
         self._require_state()
         result: list[np.ndarray] = []
         for camera, mount_id in zip(self.rig.cameras, self._mount_ids):
-            if mount_id is None:
-                result.append(np.asarray(camera.extrinsic_rel, dtype=np.float64).copy())
-            else:
-                M = _mat4(self.data.xpos[mount_id], self.data.xmat[mount_id])
-                M_w = self._T @ self._C @ M
-                result.append(
-                    np.asarray(camera.extrinsic_rel, dtype=np.float64) @ np.linalg.inv(M_w)
+            if camera.extrinsic_rel is not None:
+                if mount_id is None:
+                    result.append(np.asarray(camera.extrinsic_rel, dtype=np.float64).copy())
+                else:
+                    M = _mat4(self.data.xpos[mount_id], self.data.xmat[mount_id])
+                    M_w = self._T @ self._C @ M
+                    result.append(
+                        np.asarray(camera.extrinsic_rel, dtype=np.float64) @ np.linalg.inv(M_w)
+                    )
+                continue
+
+            camera_id = self._camera_ids.get(camera.name)
+            if camera_id is None:
+                raise ValueError(
+                    f"camera {camera.name!r} has no XML definition or legacy extrinsic"
                 )
+            M_cam = _mat4(self.data.cam_xpos[camera_id], self.data.cam_xmat[camera_id])
+            if int(self.model.cam_bodyid[camera_id]) != 0:
+                M_cam = self._T @ M_cam
+            result.append(_MUJOCO_TO_CV @ np.linalg.inv(M_cam))
         return result
 
     # ---------------------------------------------------------------- ees
@@ -187,7 +213,9 @@ class SkeletonEngine:
     def get_ee_states(self) -> list[tuple[np.ndarray, np.ndarray, float]]:
         """[(pos, rot, radius)] per EE spec, in world frame (T @ C applied)."""
         self._require_state()
-        R_wc, t_wc = self._T[:3, :3] @ self._C[:3, :3], self._T[:3, :3] @ self._C[:3, 3]
+        world_from_model = self._T @ self._C
+        R_wc = world_from_model[:3, :3]
+        t_wc = world_from_model[:3, 3]
         result: list[tuple[np.ndarray, np.ndarray, float]] = []
         for ee in self.rig.end_effectors:
             if ee.object_type == "site":
@@ -235,7 +263,9 @@ class SkeletonEngine:
         """
         self._require_state()
         spec = self.rig.skeleton
-        R_wc, t_wc = self._T[:3, :3] @ self._C[:3, :3], self._T[:3, :3] @ self._C[:3, 3]
+        world_from_model = self._T @ self._C
+        R_wc = world_from_model[:3, :3]
+        t_wc = world_from_model[:3, 3]
 
         def to_world(pos_m) -> np.ndarray:
             return (R_wc @ np.asarray(pos_m) + t_wc).astype(np.float32)
@@ -293,10 +323,17 @@ class SkeletonEngine:
                 center_m = self.data.xpos[bid]
                 rot_m = np.asarray(self.data.xmat[bid], dtype=np.float64).reshape(3, 3)
             center = R_wc @ np.asarray(center_m) + t_wc
-            closing_axis = (R_wc @ rot_m)[:, ov.closing_axis]
             a = self._require_body(ov.finger_bodies[0])
             b = self._require_body(ov.finger_bodies[1])
-            width = float(np.linalg.norm(self.data.xpos[a] - self.data.xpos[b]))
+            finger_delta = np.asarray(self.data.xpos[b] - self.data.xpos[a], dtype=np.float64)
+            width = float(np.linalg.norm(finger_delta))
+            if width > 1e-9:
+                # The XML finger bodies encode the physical closing direction.
+                # Deriving it from their FK positions keeps keypoints stable
+                # when the EE site's orientation is canonicalized for SH.
+                closing_axis = R_wc @ (finger_delta / width)
+            else:
+                closing_axis = (R_wc @ rot_m)[:, ov.closing_axis]
             half_width = width * 0.5
             keypoints[first_kp]["pos"] = (center - closing_axis * half_width).astype(np.float32)
             keypoints[second_kp]["pos"] = (center + closing_axis * half_width).astype(np.float32)
@@ -308,10 +345,35 @@ class SkeletonEngine:
         """Scale a camera's raw intrinsics to the target resolution."""
         raw_h, raw_w = raw_size
         target_h, target_w = target_size
-        K = np.asarray(camera.intrinsics, dtype=np.float64).copy()
+        K = self.camera_intrinsics(camera).copy()
         K[0, :] *= target_w / raw_w
         K[1, :] *= target_h / raw_h
         return K
+
+    def camera_intrinsics(self, camera: CameraSpec | str) -> np.ndarray:
+        """Return the 3x3 OpenCV intrinsic matrix declared in the XML."""
+        name = camera if isinstance(camera, str) else camera.name
+        camera_spec = next((c for c in self.rig.cameras if c.name == name), None)
+        if camera_spec is None:
+            raise KeyError(f"unknown camera {name!r}")
+        camera_id = self._camera_ids.get(name)
+        if camera_id is None:
+            if camera_spec.intrinsics is None:
+                raise ValueError(f"camera {name!r} has no intrinsic calibration")
+            return np.asarray(camera_spec.intrinsics, dtype=np.float64).copy()
+        fx, fy, cx, cy = np.asarray(self.model.cam_intrinsic[camera_id], dtype=np.float64)
+        if not np.all(np.isfinite([fx, fy, cx, cy])) or fx <= 0 or fy <= 0:
+            raise ValueError(f"invalid intrinsic calibration for camera {name!r}")
+        return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    def camera_resolution(self, camera: CameraSpec | str) -> tuple[int, int]:
+        """Return XML camera resolution as ``(height, width)``."""
+        name = camera if isinstance(camera, str) else camera.name
+        camera_id = self._camera_ids[name]
+        width, height = (int(v) for v in self.model.cam_resolution[camera_id])
+        if width <= 0 or height <= 0:
+            raise ValueError(f"camera {name!r} has invalid XML resolution {width}x{height}")
+        return height, width
 
     @property
     def nq(self) -> int:

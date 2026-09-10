@@ -35,9 +35,19 @@
                   <inertial pos="0.05435277 0 0" quat="1 0 0 0" mass="0.581" diaginertia="0.00029 0.00028 0.00045" />
                   <joint name="joint6" type="hinge" axis="1 0 0" range="-1.57 1.57" />
                   <geom type="capsule" size="0.025" fromto="0 0 0 0.145 0 0" name="link6_geom" />
-                  <body name="eef_link" pos="0.145 0.0 0.0" quat="1 0 0 0">
+                  <body name="gripper_center" pos="0.145 0.0 0.0" quat="1 0 0 0">
                     <inertial pos="0.0 0.0 0.0" quat="1 0 0 0" mass="1e-08" diaginertia="1e-10 1e-10 1e-10" />
-                    <geom type="sphere" size="0.02875" pos="0 0 0" name="eef_link_geom" />
+                    <site name="gripper_center" type="sphere" size="0.005" group="5" rgba="0.9 0.9 0.9 1" />
+                  </body>
+                  <body name="gripper_link1" pos="0.145 0.0 0.0" quat="1 0 0 0">
+                    <inertial pos="0.0 0.0 0.0" quat="1 0 0 0" mass="1e-08" diaginertia="1e-10 1e-10 1e-10" />
+                    <joint name="gripper_joint1" type="slide" axis="0 1 0" range="-0.04 0" />
+                    <geom type="box" size="0.012 0.03 0.012" pos="0 -0.03 0" name="gripper_link1_geom" />
+                  </body>
+                  <body name="gripper_link2" pos="0.145 0.0 0.0" quat="1 0 0 0">
+                    <inertial pos="0.0 0.0 0.0" quat="1 0 0 0" mass="1e-08" diaginertia="1e-10 1e-10 1e-10" />
+                    <joint name="gripper_joint2" type="slide" axis="0 1 0" range="0 0.04" />
+                    <geom type="box" size="0.012 0.03 0.012" pos="0 0.03 0" name="gripper_link2_geom" />
                   </body>
                 </body>
               </body>

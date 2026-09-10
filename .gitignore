@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# examples
+examples/
+
+# output
+output/
+outputs/
+11_interaction/
+output*
