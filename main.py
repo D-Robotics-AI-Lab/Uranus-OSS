@@ -56,8 +56,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", type=str, default="bf16")
     parser.add_argument("--height", type=int, default=384)
     parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--num-inference-steps", type=int, default=25)
-    parser.add_argument("--teacher-forcing-window-size", type=int, default=2)
+    parser.add_argument("--num-inference-steps", type=int, default=50)
+    parser.add_argument("--teacher-forcing-window-size", type=int, default=4)
     parser.add_argument("--step-length", type=int, default=4, help="frames per step call")
     parser.add_argument("--num-chunks", type=int, default=10, help="step calls (= chunks)")
     parser.add_argument("--seed", type=int, default=1)
@@ -479,7 +479,14 @@ def main() -> None:
     meta: dict = {"phases": {}}
     try:
         t0 = perf_counter()
-        runner.create(seed=args.seed, **sample["create"])
+        planned_num_output_frames = sum(
+            ((step["num_step"] + 3) // 4) * 4 for step in sample["steps"]
+        )
+        runner.create(
+            seed=args.seed,
+            planned_num_output_frames=planned_num_output_frames,
+            **sample["create"],
+        )
         create_s = perf_counter() - t0
         print(f"[uranus-cli] create done in {create_s:.1f} s (no video; includes first-time model load)", flush=True)
         meta["phases"]["create"] = {"seconds": create_s}
@@ -489,7 +496,7 @@ def main() -> None:
         total_step_s = 0.0
         for i, step_data in enumerate(sample["steps"]):
             t0 = perf_counter()
-            frames = runner.step(seed=args.seed, **step_data)
+            frames = runner.step(**step_data)
             step_s = perf_counter() - t0
             total_step_s += step_s
             ssummary = {c: len(f) for c, f in frames.items()}

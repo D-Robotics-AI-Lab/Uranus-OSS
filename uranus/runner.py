@@ -154,6 +154,78 @@ def parse_frame_conditions(
 
 
 @dataclass
+class _SessionNoise:
+    """CPU FP32 noise stream with optional Uranus-f-compatible preallocation.
+
+    Uranus-f creates one ``[B, N_CAM, C, F, H, W]`` tensor on CPU and only
+    then casts it to the inference dtype/device.  Drawing one ``F=1`` tensor
+    at a time is not equivalent because the multi-camera/channel memory layout
+    assigns RNG samples to frames differently.  When the rollout horizon is
+    known, ``bank`` therefore preserves the original full-tensor layout.
+    """
+
+    latent_shape: tuple[int, int, int, int, int, int]
+    generator: torch.Generator
+    bank: torch.Tensor | None = None
+    next_index: int = 1
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        seed: int,
+        latent_shape: tuple[int, int, int, int, int, int],
+        planned_future_latents: int | None,
+    ) -> "_SessionNoise":
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(int(seed))
+        if planned_future_latents is None:
+            # create() replaces Uranus-f's first denoised latent with the
+            # reference latent. Consume its conceptual noise slot so the
+            # fallback stream does not start from that slot again.
+            torch.randn(
+                latent_shape,
+                generator=generator,
+                device="cpu",
+                dtype=torch.float32,
+            )
+            return cls(latent_shape=latent_shape, generator=generator)
+        if planned_future_latents < 0:
+            raise ValueError("planned_future_latents must be >= 0")
+        bank_shape = (
+            *latent_shape[:3],
+            planned_future_latents + 1,
+            *latent_shape[4:],
+        )
+        bank = torch.randn(
+            bank_shape,
+            generator=generator,
+            device="cpu",
+            dtype=torch.float32,
+        )
+        return cls(latent_shape=latent_shape, generator=generator, bank=bank)
+
+    def next(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if self.bank is None:
+            noise = torch.randn(
+                self.latent_shape,
+                generator=self.generator,
+                device="cpu",
+                dtype=torch.float32,
+            )
+        else:
+            if self.next_index >= self.bank.shape[3]:
+                planned = self.bank.shape[3] - 1
+                raise RuntimeError(
+                    "Noise bank exhausted: the session was created for "
+                    f"{planned} future latent frames"
+                )
+            noise = self.bank[:, :, :, self.next_index : self.next_index + 1]
+        self.next_index += 1
+        return noise.to(device=device, dtype=dtype)
+
+
+@dataclass
 class _SessionMeta:
     """Session bookkeeping (replaces the legacy dict-based ``_meta``)."""
 
@@ -163,6 +235,7 @@ class _SessionMeta:
     prompt: str
     seed: int
     raw_sizes: dict[str, tuple[int, int]]
+    noise: _SessionNoise
     scaled_intrinsics: dict[str, np.ndarray] = field(default_factory=dict)
 
 
@@ -237,6 +310,7 @@ class UranusRunner:
         camera_names: tuple[str, ...] | None = None,
         robot2world: np.ndarray | None = None,
         seed: int = 1,
+        planned_num_output_frames: int | None = None,
     ) -> None:
         """Start a new generation from the reference frame.
 
@@ -246,8 +320,13 @@ class UranusRunner:
         whole session (KV streams, decode order, output naming).
         ``camera_names`` is accepted for backward compatibility and must match
         the rig names (order-insensitively checked as a set).
+        ``planned_num_output_frames`` enables exact Uranus-f noise layout by
+        preallocating the full CPU FP32 temporal noise bank. Open-ended sessions
+        may omit it and still receive a persistent, non-repeating noise stream.
         """
         camera_names = tuple(camera_names) if camera_names is not None else tuple(c.name for c in cameras)
+        if planned_num_output_frames is not None and planned_num_output_frames < 0:
+            raise ValueError("planned_num_output_frames must be >= 0")
         if len(ref_cam_images) != len(cameras):
             raise ValueError(
                 f"ref_cam_images count must equal rig size, "
@@ -319,8 +398,6 @@ class UranusRunner:
             for cam_idx, camera in enumerate(rig.cameras)
         ]
 
-        generator = torch.Generator(device=self.device)
-        generator.manual_seed(seed)
         state = self._create_stream_infer(
             prompt=prompt,
             reference_images=decoded.reference_images,
@@ -328,7 +405,28 @@ class UranusRunner:
             reference_camera_extrinsics=reference_camera_extrinsics,
             reference_camera_intrinsics=[scaled_intrinsics[name] for name in camera_names],
             camera_names=camera_names,
-            generator=generator,
+        )
+
+        planned_future_latents = (
+            None
+            if planned_num_output_frames is None
+            else (
+                planned_num_output_frames + state.temporal_interval - 1
+            )
+            // state.temporal_interval
+        )
+        latent_shape = (
+            1,
+            len(camera_names),
+            self.models["vae"].model.z_dim,
+            1,
+            self._height // state.spatial_interval,
+            self._width // state.spatial_interval,
+        )
+        noise = _SessionNoise.create(
+            seed=seed,
+            latent_shape=latent_shape,
+            planned_future_latents=planned_future_latents,
         )
 
         self._state = state
@@ -340,6 +438,7 @@ class UranusRunner:
             prompt=prompt,
             seed=seed,
             raw_sizes=raw_sizes,
+            noise=noise,
             scaled_intrinsics=scaled_intrinsics,
         )
 
@@ -352,7 +451,6 @@ class UranusRunner:
         reference_camera_extrinsics: list,
         reference_camera_intrinsics: list,
         camera_names: tuple[str, ...],
-        generator: torch.Generator,
     ) -> UranusStreamState:
         models = self.models
         stream_config = self._build_stream_config(num_cameras=len(camera_names))
@@ -372,7 +470,7 @@ class UranusRunner:
             camera_intrinsics=[[cam_intr] for cam_intr in reference_camera_intrinsics],
             stream_config=stream_config,
             state=None,
-            generator=generator,
+            noise=None,
         )
         with torch.no_grad():
             _, state = decode_frame(
@@ -397,6 +495,8 @@ class UranusRunner:
 
         The frame count is rounded up to a multiple of the temporal interval
         (4); short sequences are padded by repeating the last frame's inputs.
+        Randomness belongs to the session created by ``create(seed=...)``;
+        the legacy ``seed`` argument may only repeat that same session seed.
         Each qpos entry is the full MJCF qpos vector or an exported frame dict.
         Returns ``{camera: [H, W, 3] uint8 RGB frames]}``
         with exactly the rounded-up frame count per camera.
@@ -413,7 +513,10 @@ class UranusRunner:
         meta = self._meta
         engine = meta.engine
         camera_names = meta.camera_names
-        seed = int(seed) if seed is not None else meta.seed
+        if seed is not None and int(seed) != meta.seed:
+            raise ValueError(
+                "seed is session-scoped; pass it to create() instead of reseeding step()"
+            )
 
         chunk_size = int(self._state.temporal_interval)
         if chunk_size <= 0:
@@ -437,9 +540,6 @@ class UranusRunner:
         )
 
         target_size = (self._height, self._width)
-        generator = torch.Generator(device=self.device)
-        generator.manual_seed(seed)
-
         stream_config = self._build_stream_config(num_cameras=len(camera_names))
         state = self._state
         output_chunks: list[torch.Tensor] = []
@@ -497,6 +597,7 @@ class UranusRunner:
             camera_intrinsics = [
                 [meta.scaled_intrinsics[name]] * chunk_size for name in camera_names
             ]
+            noise = meta.noise.next(device=self.device, dtype=self._dtype)
 
             with torch.no_grad():
                 generated_latents, state = self._run_stream(
@@ -510,7 +611,7 @@ class UranusRunner:
                     camera_intrinsics=camera_intrinsics,
                     stream_config=stream_config,
                     state=state,
-                    generator=generator,
+                    noise=noise,
                 )
                 # The KV cache stays on the GPU for the whole step; it is never
                 # moved off mid-loop (a mid-step relocation races the next
@@ -566,7 +667,7 @@ class UranusRunner:
         camera_intrinsics,
         stream_config,
         state,
-        generator: torch.Generator,
+        noise: torch.Tensor | None,
     ):
         models = self.models
         with torch.no_grad():
@@ -616,7 +717,7 @@ class UranusRunner:
                 device=self.device,
                 dtype=self._dtype,
                 config=stream_config,
-                generator=generator,
+                noise=noise,
             )
             state = fill_frame_kv_cache(
                 generated_latents=generated_latents,

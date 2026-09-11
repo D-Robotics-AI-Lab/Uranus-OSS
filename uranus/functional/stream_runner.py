@@ -250,6 +250,7 @@ def generate_frame(
     dtype,
     config: UranusStreamConfig | None = None,
     generator: torch.Generator | None = None,
+    noise: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Denoise one new latent frame. Read-only on ``state`` (no KV, no index bump).
 
@@ -278,7 +279,14 @@ def generate_frame(
         state.height // state.spatial_interval,
         state.width // state.spatial_interval,
     )
-    noise = torch.randn(shape, generator=generator, device=device, dtype=dtype)
+    if noise is None:
+        noise = torch.randn(shape, generator=generator, device=device, dtype=dtype)
+    else:
+        if tuple(noise.shape) != shape:
+            raise ValueError(
+                f"noise must have shape {shape}, got {tuple(noise.shape)}"
+            )
+        noise = noise.to(device=device, dtype=dtype)
 
     generated_latents = dit_decode_step(
         dit=models["dit"],

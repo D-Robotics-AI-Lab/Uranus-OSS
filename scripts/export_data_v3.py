@@ -2,9 +2,9 @@
 
 The exporter deliberately uses ``get_episode`` rather than ``__getitem__``.
 Robot FK turns the dataset's native observation state into complete MJCF qpos.
-The XML retains a portable camera rig fallback, while exact per-frame camera
-extrinsics and measured gripper geometry are kept in temporal.json so Uranus
-inference receives the same conditions as the dataset episode API.
+Camera intrinsics and the mounted camera poses are stored in the MJCF.  At
+runtime MuJoCo FK composes the per-frame extrinsics from that mounted rig;
+``temporal.json`` therefore contains no duplicate camera calibration.
 """
 
 from __future__ import annotations
@@ -573,16 +573,13 @@ def export_repo(
     frames = _episode_frames(item, child, episode_index)
     qpos, body_poses, Ts, ee_radii, gripper_widths = _body_poses(robot, frames)
     K_all, mounts, rels = [], [], []
-    camera_extrinsics = {}
     for camera in cameras:
         K, _, E_all = _camera_sequence(item, camera)
-        camera_extrinsics[camera] = E_all
         mount, E_or_rel = _camera_mount(robot_name, camera, E_all, body_poses, Ts)
-        if mount is not None:
-            # E_or_rel is camera-from-body in OpenCV coordinates.
-            rels.append(E_or_rel)
-        else:
-            rels.append(E_or_rel)
+        # Mounted cameras store camera-from-body; external cameras store the
+        # constant world-to-camera transform.  _inject_cameras converts both
+        # to a MuJoCo camera pose and attaches the element to the right body.
+        rels.append(E_or_rel)
         K_all.append(K)
         mounts.append(mount)
 
@@ -632,7 +629,7 @@ def export_repo(
     _inject_cameras(temp_asset, mjcf_path, cameras, K_all, mounts, rels, raw_sizes)
     temp_asset.unlink()
     meta = {
-        "format_version": 4,
+        "format_version": 5,
         "prompt": str(item.get("task", "")),
         "mjcf_path": str(mjcf_path.relative_to(sample_dir)),
         "cameras": [{"name": camera} for camera in cameras],
@@ -668,10 +665,6 @@ def export_repo(
         compact_state = np.asarray(frame["observation.state"], dtype=np.float64).reshape(-1).tolist()
         entry = {
             "observation.state": compact_state,
-            "camera_extrinsics": {
-                camera: camera_extrinsics[camera][index].tolist()
-                for camera in cameras
-            },
             "end_effector_radii": ee_radii[index],
         }
         mujoco_qpos.append(qpos[index].tolist())
