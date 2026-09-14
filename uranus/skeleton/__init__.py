@@ -6,12 +6,20 @@ Replaces the per-robot ``uranus.robot`` classes.  See
 
 from .engine import SkeletonEngine
 from .render import render_skeleton_frames, batch_render_sh_on_image
-from .specs import CameraSpec, EESpec, RigSpec, SkeletonSpec, rigid_transform
+from .specs import (
+    CameraSpec,
+    EESpec,
+    GripperKeypointOverride,
+    RigSpec,
+    SkeletonSpec,
+    rigid_transform,
+)
 
 __all__ = [
     "SkeletonEngine",
     "CameraSpec",
     "EESpec",
+    "GripperKeypointOverride",
     "RigSpec",
     "SkeletonSpec",
     "rigid_transform",

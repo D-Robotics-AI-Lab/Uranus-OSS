@@ -11,7 +11,21 @@ dependencies = [
     "numpy>=2.4.6",
     "opencv-python-headless>=5.0.0.93",
     "pillow>=12.3.0",
-    "torch==2.10.0",
+    "torch==2.14.0",
     "tqdm>=4.70.0",
     "transformers>=5.16.1",
+    "uranus-data",
 ]
+
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+
+[tool.uv.sources]
+uranus-data = { path = "../Uranus-data/dist/uranus_data-0.3.0-py3-none-any.whl" }
+torch = { index = "pytorch-cu126" }

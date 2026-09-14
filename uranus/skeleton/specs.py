@@ -5,14 +5,9 @@ runtime needs to render skeletons and compose camera extrinsics is expressed
 here as plain data, validated once at construction time against the MJCF
 model.  ``from_dict`` is the meta.json (v2) deserialization entry point.
 
-Frame conventions (see skeleton_refactor_plan.md §2):
-
-* ``world_from_model`` (C) maps the MJCF model frame to the annotation/world
-  frame; identity by default.
-* ``CameraSpec.extrinsic_rel`` is camera-from-mount (world-from-camera for
-  external cameras, ``mount_body=None``).
-* Per-frame robot-to-world (``observation.robot2world_trans``) is *data*, not
-  rig state — it enters at ``SkeletonEngine.set_state`` time.
+Camera pose, mount, and intrinsic calibration are read from named MuJoCo
+``<camera>`` elements.  ``CameraSpec`` only carries the ordered camera name;
+the optional calibration fields are retained solely to read old samples.
 
 Validation errors raise ``ValueError``.
 """
@@ -57,7 +52,7 @@ def _check_rigid(name: str, matrix: np.ndarray) -> np.ndarray:
 
 
 def rigid_transform(name: str, value) -> np.ndarray:
-    """Validate and return a rigid 4x4 transform (world_from_model, robot2world_trans)."""
+    """Validate and return a rigid 4x4 transform."""
     return _check_rigid(name, _as_matrix(name, value, (4, 4)))
 
 
@@ -71,14 +66,16 @@ class CameraSpec:
     """
 
     name: str
-    intrinsics: np.ndarray          # 3x3, raw sensor resolution
-    mount_body: str | None
-    extrinsic_rel: np.ndarray       # 4x4 camera-from-mount
+    intrinsics: np.ndarray | None = None  # deprecated v2 field
+    mount_body: str | None = None         # deprecated v2 field
+    extrinsic_rel: np.ndarray | None = None  # deprecated v2 field
 
     def validate(self) -> None:
         _require(bool(self.name), "camera name must be non-empty")
-        _as_matrix(f"cameras[{self.name!r}].intrinsics", self.intrinsics, (3, 3))
-        _check_rigid(f"cameras[{self.name!r}].extrinsic_rel", self.extrinsic_rel)
+        if self.intrinsics is not None:
+            _as_matrix(f"cameras[{self.name!r}].intrinsics", self.intrinsics, (3, 3))
+        if self.extrinsic_rel is not None:
+            _check_rigid(f"cameras[{self.name!r}].extrinsic_rel", self.extrinsic_rel)
 
 
 @dataclass(frozen=True)
@@ -174,11 +171,10 @@ class SkeletonSpec:
 
 @dataclass(frozen=True)
 class RigSpec:
-    """Full create-time configuration (meta.json v2 ``rig`` payload)."""
+    """Create-time environment configuration."""
 
     mjcf_path: str
     cameras: tuple[CameraSpec, ...]                 # ordered — camera order is rig order
-    world_from_model: np.ndarray                    # 4x4 (default identity)
     end_effectors: tuple[EESpec, ...] = ()
     skeleton: SkeletonSpec = field(default_factory=SkeletonSpec)
 
@@ -192,7 +188,6 @@ class RigSpec:
         _require(len(names) == len(set(names)), f"camera names must be unique, got {names}")
         for camera in self.cameras:
             camera.validate()
-        _check_rigid("world_from_model", self.world_from_model)
         for ee in self.end_effectors:
             ee.validate()
         self.skeleton.validate()
@@ -201,22 +196,31 @@ class RigSpec:
 
     @classmethod
     def from_dict(cls, payload: dict) -> "RigSpec":
-        """Build from a meta.json (v2) dict (see skeleton_refactor_plan.md §4)."""
+        """Build from a sample ``meta.json`` dictionary."""
         cameras = tuple(
-            CameraSpec(
+            CameraSpec(name=cam)
+            if isinstance(cam, str)
+            else CameraSpec(
                 name=str(cam["name"]),
-                intrinsics=_as_matrix(f"cameras[{cam['name']!r}].intrinsics", cam["intrinsics"], (3, 3)),
+                intrinsics=(
+                    _as_matrix(
+                        f"cameras[{cam['name']!r}].intrinsics", cam["intrinsics"], (3, 3)
+                    )
+                    if cam.get("intrinsics") is not None
+                    else None
+                ),
                 mount_body=cam.get("mount_body"),
-                extrinsic_rel=_as_matrix(
-                    f"cameras[{cam['name']!r}].extrinsic_rel", cam["extrinsic_rel"], (4, 4)
+                extrinsic_rel=(
+                    _as_matrix(
+                        f"cameras[{cam['name']!r}].extrinsic_rel",
+                        cam["extrinsic_rel"],
+                        (4, 4),
+                    )
+                    if cam.get("extrinsic_rel") is not None
+                    else None
                 ),
             )
             for cam in payload["cameras"]
-        )
-        world_from_model = (
-            rigid_transform("world_from_model", payload["world_from_model"])
-            if payload.get("world_from_model") is not None
-            else np.eye(4)
         )
         end_effectors = tuple(
             EESpec(
@@ -255,7 +259,6 @@ class RigSpec:
         rig = cls(
             mjcf_path=str(payload["mjcf_path"]),
             cameras=cameras,
-            world_from_model=world_from_model,
             end_effectors=end_effectors,
             skeleton=skeleton,
         )

@@ -21,10 +21,10 @@ Flow:
     skeleton, denoises one new latent frame, fills + trims the KV cache, and
     incrementally VAE-decodes 4 video frames. Returns per-camera uint8 frames.
 
-Cameras are configured once at ``create`` (external fixed or body-mounted,
-``uranus.skeleton.specs.CameraSpec``); steps carry only qpos (plus an optional
-per-frame robot-to-world for movable bases). The composed extrinsics are the
-single source shared by the skeleton renderer and the Plücker conditioning.
+Cameras and their mounts are configured once in the MJCF passed to ``create``;
+steps carry joint positions, compact gripper state, and a robot transform. The
+composed XML camera extrinsics are shared by the skeleton renderer and Plücker
+conditioning.
 
 Single-session semantics: ``create`` starts a new generation (an active
 session is silently replaced), ``step`` advances it, ``close`` releases it.
@@ -50,16 +50,15 @@ from uranus.skeleton import (
     RigSpec,
     SkeletonEngine,
     SkeletonSpec,
-    rigid_transform,
 )
 from uranus.utils.media import (
     decode_reference_images,
-    pad_qpos_sequence,
+    pad_list,
     resolve_step_raw_sizes,
 )
 from uranus.utils.model_loader import load_models
-from uranus.utils.video import video_to_frames
-from uranus.functional import UranusStreamConfig
+from uranus.utils.video import plucker_to_rgb_frames, video_to_frames
+from uranus.functional import UranusStreamConfig, compute_plucker_embeddings
 from uranus.functional.stream_runner import (
     check_data_validity,
     decode_frame,
@@ -88,17 +87,47 @@ def parse_dtype(dtype_name: str) -> torch.dtype:
         ) from None
 
 
-def parse_frame(frame) -> tuple[np.ndarray, np.ndarray | None]:
-    """Split one step frame into ``(qpos, robot2world | None)``.
-
-    Accepts a bare qpos vector or a dict
-    ``{"observation.state": ..., "observation.robot2world_trans"?: ...}``.
-    """
+def parse_frame(frame) -> np.ndarray | dict[str, Any]:
+    """Normalize one joint/gripper/robot-transform frame."""
     if isinstance(frame, dict):
-        qpos = np.asarray(frame["observation.state"], dtype=np.float64)
-        T = frame.get("observation.robot2world_trans")
-        return qpos, (np.asarray(T, dtype=np.float64) if T is not None else None)
-    return np.asarray(frame, dtype=np.float64), None
+        fields = {"joint_positions", "gripper", "robot_transform"}
+        legacy_fields = {"arm", "gripper", "robot_transform"}
+        if any(field in frame for field in fields | {"arm"}):
+            expected = legacy_fields if "arm" in frame else fields
+            missing = sorted(expected - set(frame))
+            extra = sorted(set(frame) - expected)
+            if missing or extra:
+                raise ValueError(
+                    "state must contain exactly "
+                    "joint_positions/gripper/robot_transform; "
+                    f"missing={missing}, extra={extra}"
+                )
+            transform = frame["robot_transform"]
+            if not isinstance(transform, dict):
+                raise ValueError("robot_transform must be an object")
+            return {
+                "joint_positions": np.asarray(
+                    frame.get("joint_positions", frame.get("arm")), dtype=np.float64
+                )
+                .reshape(-1)
+                .tolist(),
+                "gripper": np.asarray(frame["gripper"], dtype=np.float64)
+                .reshape(-1)
+                .tolist(),
+                "robot_transform": {
+                    "xyz": np.asarray(transform.get("xyz", []), dtype=np.float64)
+                    .reshape(-1)
+                    .tolist(),
+                    "quaternion": np.asarray(
+                        transform.get("quaternion", []), dtype=np.float64
+                    )
+                    .reshape(-1)
+                    .tolist(),
+                },
+            }
+        # Compatibility with the previous exported frame wrapper.
+        return np.asarray(frame["observation.state"], dtype=np.float64)
+    return np.asarray(frame, dtype=np.float64)
 
 
 @dataclass
@@ -110,6 +139,7 @@ class _SessionMeta:
     rig: RigSpec
     prompt: str
     seed: int
+    generator: torch.Generator
     raw_sizes: dict[str, tuple[int, int]]
     scaled_intrinsics: dict[str, np.ndarray] = field(default_factory=dict)
 
@@ -177,17 +207,16 @@ class UranusRunner:
         ref_cam_images: tuple[bytes, ...],
         ref_qpos: np.ndarray | dict[str, Any],
         cameras: list[CameraSpec] | tuple[CameraSpec, ...],
-        world_from_model: np.ndarray | None = None,
         end_effectors: list[EESpec] | tuple[EESpec, ...] | None = None,
         skeleton: SkeletonSpec | None = None,
         camera_names: tuple[str, ...] | None = None,
-        robot2world: np.ndarray | None = None,
         seed: int = 1,
     ) -> None:
         """Start a new generation from the reference frame.
 
-        ``ref_qpos`` is the full MJCF qpos (length ``model.nq``) or a dict
-        ``{"observation.state": ..., "observation.robot2world_trans"?: ...}``.
+        ``ref_qpos`` contains joint positions, gripper, and robot transform
+        state using the joint order declared by the MJCF, or a full qpos vector
+        for compatibility.
         ``cameras`` is the ordered rig — its order fixes camera order for the
         whole session (KV streams, decode order, output naming).
         ``camera_names`` is accepted for backward compatibility and must match
@@ -208,20 +237,13 @@ class UranusRunner:
         rig = RigSpec(
             mjcf_path=mjcf_path,
             cameras=tuple(cameras),
-            world_from_model=(
-                rigid_transform("world_from_model", world_from_model)
-                if world_from_model is not None
-                else np.eye(4)
-            ),
             end_effectors=tuple(end_effectors) if end_effectors else (),
             skeleton=skeleton if skeleton is not None else SkeletonSpec(),
         )
         engine = SkeletonEngine(rig)
 
-        qpos, T = parse_frame(ref_qpos)
-        if robot2world is not None and T is None:
-            T = np.asarray(robot2world, dtype=np.float64)
-        engine.set_state(qpos, T)
+        qpos = parse_frame(ref_qpos)
+        engine.set_state(qpos)
 
         target_size = (self._height, self._width)
         decoded = decode_reference_images(
@@ -272,6 +294,7 @@ class UranusRunner:
             rig=rig,
             prompt=prompt,
             seed=seed,
+            generator=generator,
             raw_sizes=raw_sizes,
             scaled_intrinsics=scaled_intrinsics,
         )
@@ -325,15 +348,25 @@ class UranusRunner:
         qpos: tuple[np.ndarray | dict[str, Any], ...],
         num_step: int,
         seed: int | None = None,
-    ) -> dict[str, list[np.ndarray]]:
+        return_skeleton: bool = False,
+        return_plucker: bool = False,
+    ) -> (
+        dict[str, list[np.ndarray]]
+        | tuple[dict[str, list[np.ndarray]], dict[str, list[np.ndarray]]]
+        | tuple[
+            dict[str, list[np.ndarray]],
+            dict[str, list[np.ndarray]],
+            dict[str, list[np.ndarray]],
+        ]
+    ):
         """Advance the session by ``num_step`` video frames.
 
         The frame count is rounded up to a multiple of the temporal interval
         (4); short sequences are padded by repeating the last frame's inputs.
-        Each qpos entry is the full MJCF qpos vector, or a dict
-        ``{"observation.state": ..., "observation.robot2world_trans"?: ...}``
-        for movable bases. Returns ``{camera: [H, W, 3] uint8 RGB frames]}``
-        with exactly the rounded-up frame count per camera.
+        Each entry contains joint positions, gripper, and robot transform state
+        (or is a legacy full-qpos vector). Returns per-camera RGB frames with
+        exactly the rounded-up frame count. Optional visualization outputs are
+        appended to the return tuple in skeleton, then Plücker order.
         """
         if self._state is None or self._meta is None:
             raise RuntimeError("create() must be called before step()")
@@ -347,42 +380,38 @@ class UranusRunner:
         meta = self._meta
         engine = meta.engine
         camera_names = meta.camera_names
-        seed = int(seed) if seed is not None else meta.seed
+        if seed is not None and int(seed) != meta.seed:
+            raise ValueError("seed is session-scoped; pass it to create()")
 
         chunk_size = int(self._state.temporal_interval)
         if chunk_size <= 0:
             raise RuntimeError(f"Invalid temporal_interval: {chunk_size}")
         actual_steps = ((requested_steps + chunk_size - 1) // chunk_size) * chunk_size
 
-        # Split frames into (qpos, robot2world) and repeat-last pad to the
-        # chunk-aligned frame count.
-        split = [parse_frame(frame) for frame in qpos]
-        qpos_sequence = [q for q, _T in split]
-        T_sequence: list[np.ndarray | None] | None = None
-        if any(T is not None for _q, T in split):
-            T_sequence = [T for _q, T in split]
-        qpos_sequence, T_sequence = pad_qpos_sequence(
-            qpos_sequence, T_sequence, requested_steps, actual_steps
-        )
+        qpos_sequence = [parse_frame(frame) for frame in qpos]
+        qpos_sequence = pad_list(qpos_sequence, requested_steps, name="state")
+        qpos_sequence = pad_list(qpos_sequence, actual_steps, name="state.chunk_align")
 
         target_size = (self._height, self._width)
-        generator = torch.Generator(device=self.device)
-        generator.manual_seed(seed)
+        # The generator belongs to the session. Recreating it here used to
+        # restart the same random sequence on every public step() call.
+        generator = meta.generator
 
         stream_config = self._build_stream_config(num_cameras=len(camera_names))
         state = self._state
         output_chunks: list[torch.Tensor] = []
+        skeleton_frames = {name: [] for name in camera_names}
+        plucker_frames = {name: [] for name in camera_names}
         for start in range(0, actual_steps, chunk_size):
             end = start + chunk_size
             chunk_qpos = qpos_sequence[start:end]
-            chunk_T = T_sequence[start:end] if T_sequence is not None else None
 
             # FK every frame once, collect per-frame geometry, then compose
             # per-frame extrinsics per camera.
             ee_states_all, keypoints_all, extrinsics_all = [], [], []
             sh_corrections = None
-            for i, frame_qpos in enumerate(chunk_qpos):
-                engine.set_state(frame_qpos, chunk_T[i] if chunk_T is not None else None)
+            for frame_qpos in chunk_qpos:
+                engine.set_state(frame_qpos)
                 ee_states_all.append(engine.get_ee_states())
                 keypoints_all.append(engine.get_keypoints())
                 extrinsics_all.append(engine.compose_camera_extrinsics())
@@ -406,6 +435,22 @@ class UranusRunner:
                     sh_corrections=sh_corrections,
                 )
                 skeleton_images.append(video)
+                if return_skeleton:
+                    skeleton_frames[camera.name].extend(
+                        frame.permute(1, 2, 0).contiguous().cpu().numpy()
+                        for frame in video
+                    )
+                if return_plucker:
+                    plucker = compute_plucker_embeddings(
+                        extrinsics=per_camera_extrinsics[cam_idx],
+                        intrinsics=[K] * chunk_size,
+                        height=target_size[0],
+                        width=target_size[1],
+                        device="cpu",
+                    )
+                    plucker_frames[camera.name].extend(
+                        plucker_to_rgb_frames(plucker)
+                    )
 
             camera_extrinsics = per_camera_extrinsics
             camera_intrinsics = [
@@ -444,7 +489,14 @@ class UranusRunner:
 
         self._state = state
         video = torch.cat(output_chunks, dim=3).contiguous()  # dim 3 is time
-        return video_to_frames(video, camera_names)
+        generated_frames = video_to_frames(video, camera_names)
+        if return_skeleton and return_plucker:
+            return generated_frames, skeleton_frames, plucker_frames
+        if return_skeleton:
+            return generated_frames, skeleton_frames
+        if return_plucker:
+            return generated_frames, plucker_frames
+        return generated_frames
 
     # ---------------------------------------------------------------- internals
 

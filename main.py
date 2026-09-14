@@ -1,12 +1,12 @@
-"""CLI driver for the single-GPU Uranus streaming runner (v2 rig format).
+"""CLI driver for the single-GPU Uranus streaming runner.
 
-Loads one sample directory holding ``meta.json`` (rig: mjcf_path / cameras
-with mounts + intrinsics / world_from_model / end_effectors / skeleton /
-prompt) and ``temporal.json`` (``step_qpos``: full-qpos vectors, optionally
-``observation.robot2world_trans`` per frame), drives
-``uranus.runner.UranusRunner`` through ``create → N x step`` (models are
-assembled lazily inside the first ``create``), and writes per-camera mp4
-files plus a horizontally-concatenated ``preview.mp4``.
+Loads one sample directory holding ``meta.json`` (MJCF path, camera names,
+end-effectors, skeleton, prompt) and ``temporal.json`` (a one-time joint-group
+description plus per-frame ``joint_positions``, compact ``gripper``, and
+``robot_transform`` state). Camera calibration and mounting live in the MJCF.
+It drives ``uranus.runner.UranusRunner`` through ``create → N x step`` (models
+are assembled lazily inside the first ``create``), then writes aligned H.264
+GT, generated, skeleton, and Plücker videos plus one comparison preview.
 
 The reference (create) frame is always frame 0 of the time series; chunk ``c``
 of ``step`` covers frames ``[c * step_length + 1, (c + 1) * step_length]``.
@@ -25,7 +25,8 @@ import cv2
 import numpy as np
 
 from uranus.runner import UranusRunner
-from uranus.skeleton import CameraSpec, EESpec, SkeletonSpec
+from uranus.skeleton import CameraSpec, EESpec, GripperKeypointOverride, SkeletonSpec
+from uranus.utils.video import write_h264_video
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,14 +42,14 @@ def parse_args() -> argparse.Namespace:
         "--sample-dir",
         type=str,
         default=None,
-        help="sample dir with meta.json / temporal.json / ref_images (v2 rig format)",
+        help="sample dir with meta.json / temporal.json / ref_images",
     )
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--dtype", type=str, default="bf16")
     parser.add_argument("--height", type=int, default=384)
     parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--num-inference-steps", type=int, default=25)
-    parser.add_argument("--teacher-forcing-window-size", type=int, default=2)
+    parser.add_argument("--num-inference-steps", type=int, default=50)
+    parser.add_argument("--teacher-forcing-window-size", type=int, default=4)
     parser.add_argument("--step-length", type=int, default=4, help="frames per step call")
     parser.add_argument("--num-chunks", type=int, default=10, help="step calls (= chunks)")
     parser.add_argument("--seed", type=int, default=1)
@@ -81,37 +82,61 @@ def _build_ee_spec(ee: dict) -> EESpec:
 
 
 def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
-    """Load a v2 sample dir (meta.json + temporal.json) into runner-ready data."""
+    """Load one XML-environment sample into runner-ready data."""
     sample_dir = Path(sample_dir)
     with (sample_dir / "meta.json").open("r", encoding="utf-8") as f:
         meta = json.load(f)
     with (sample_dir / "temporal.json").open("r", encoding="utf-8") as f:
         temporal = json.load(f)
 
-    cameras = [
-        CameraSpec(
-            name=str(cam["name"]),
-            intrinsics=_as_matrix(cam["intrinsics"]),
-            mount_body=cam.get("mount_body"),
-            extrinsic_rel=_as_matrix(cam["extrinsic_rel"]),
-        )
-        for cam in meta["cameras"]
-    ]
+    cameras = []
+    for cam in meta["cameras"]:
+        if isinstance(cam, str):
+            cameras.append(CameraSpec(name=cam))
+        else:
+            cameras.append(
+                CameraSpec(
+                    name=str(cam["name"]),
+                    intrinsics=(
+                        _as_matrix(cam["intrinsics"])
+                        if cam.get("intrinsics") is not None
+                        else None
+                    ),
+                    mount_body=cam.get("mount_body"),
+                    extrinsic_rel=(
+                        _as_matrix(cam["extrinsic_rel"])
+                        if cam.get("extrinsic_rel") is not None
+                        else None
+                    ),
+                )
+            )
     camera_names = tuple(cam.name for cam in cameras)
 
     skel = meta.get("skeleton") or {}
+    overrides = tuple(
+        GripperKeypointOverride(
+            ee_object_type=str(override["ee_object_type"]),
+            ee_object_name=str(override["ee_object_name"]),
+            finger_bodies=tuple(override["finger_bodies"]),
+            closing_axis=int(override.get("closing_axis", 1)),
+        )
+        for override in skel.get("gripper_keypoint_overrides", [])
+    )
     skeleton = SkeletonSpec(
         mode=str(skel.get("mode", "full_tree")),
         chains=tuple(tuple(chain) for chain in skel.get("chains", [])),
         skip_bodies=tuple(skel.get("skip_bodies", [])),
+        gripper_keypoint_overrides=overrides,
     )
 
-    step_qpos = temporal["step_qpos"]
+    states = temporal.get("states", temporal.get("step_qpos"))
+    if states is None:
+        raise ValueError("temporal.json must contain 'states'")
     total_step_frames = num_chunks * step_length
-    if len(step_qpos) < total_step_frames + 1:
+    if len(states) < total_step_frames + 1:
         raise ValueError(
             f"Not enough qpos frames for num_chunks={num_chunks} * step_length={step_length}: "
-            f"need >= {total_step_frames + 1}, got {len(step_qpos)}"
+            f"need >= {total_step_frames + 1}, got {len(states)}"
         )
 
     height = int(meta.get("height", 384))
@@ -123,13 +148,8 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
             _resolve_path(meta["ref_cam_images"][name], sample_dir).read_bytes()
             for name in camera_names
         ),
-        "ref_qpos": _as_matrix(step_qpos[0]) if not isinstance(step_qpos[0], dict) else step_qpos[0],
+        "ref_qpos": states[0],
         "cameras": cameras,
-        "world_from_model": (
-            _as_matrix(meta["world_from_model"])
-            if meta.get("world_from_model") is not None
-            else None
-        ),
         "end_effectors": [_build_ee_spec(ee) for ee in meta.get("end_effectors", [])],
         "skeleton": skeleton,
         "camera_names": camera_names,
@@ -139,13 +159,18 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
         start = chunk_index * step_length + 1
         steps.append(
             {
-                "qpos": tuple(step_qpos[start : start + step_length]),
+                "qpos": tuple(states[start : start + step_length]),
                 "num_step": step_length,
             }
         )
     return {
         "camera_names": camera_names,
         "robot_type": (meta.get("migrated_from") or {}).get("robot_type"),
+        "gt_videos": {
+            name: _resolve_path(meta["gt_videos"][name], sample_dir)
+            for name in camera_names
+            if name in meta.get("gt_videos", {})
+        },
         "height": height,
         "width": width,
         "create": create,
@@ -153,7 +178,43 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
     }
 
 
-def _save_frames(frames: dict[str, list[np.ndarray]], output_dir: Path, *, fps: int, save_images: bool) -> list[str]:
+def _read_gt_frames(
+    paths: dict[str, Path],
+    frame_counts: dict[str, int],
+) -> dict[str, list[np.ndarray]]:
+    missing = sorted(set(frame_counts) - set(paths))
+    if missing:
+        raise ValueError(f"meta.json is missing gt_videos for cameras: {missing}")
+    result = {}
+    for camera_name, frame_count in frame_counts.items():
+        capture = cv2.VideoCapture(str(paths[camera_name]))
+        if not capture.isOpened():
+            raise RuntimeError(f"Failed to open GT video: {paths[camera_name]}")
+        frames = []
+        try:
+            while len(frames) < frame_count:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        finally:
+            capture.release()
+        if len(frames) != frame_count:
+            raise ValueError(
+                f"GT video {paths[camera_name]} has only {len(frames)} frames; "
+                f"need {frame_count}"
+            )
+        result[camera_name] = frames
+    return result
+
+
+def _save_frames(
+    frames: dict[str, list[np.ndarray]],
+    output_dir: Path,
+    *,
+    fps: int,
+    save_images: bool,
+) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     saved: list[str] = []
     if not frames:
@@ -162,43 +223,103 @@ def _save_frames(frames: dict[str, list[np.ndarray]], output_dir: Path, *, fps: 
     for camera_name, cam_frames in frames.items():
         if not cam_frames:
             continue
-        height, width = int(cam_frames[0].shape[0]), int(cam_frames[0].shape[1])
         if save_images:
             cam_dir = output_dir / "obs" / camera_name
             cam_dir.mkdir(parents=True, exist_ok=True)
             for index, frame in enumerate(cam_frames):
-                cv2.imwrite(str(cam_dir / f"{index:04d}.png"), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        writer = cv2.VideoWriter(
-            str(output_dir / f"{camera_name}.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
-        )
-        if not writer.isOpened():
-            raise RuntimeError(f"Failed to open video writer: {output_dir / f'{camera_name}.mp4'}")
-        try:
-            for frame in cam_frames:
-                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        finally:
-            writer.release()
-        saved.append(str(output_dir / f"{camera_name}.mp4"))
-
-    frame_count = min(len(f) for f in frames.values() if f)
-    if frame_count > 0:
-        cameras = list(frames)
-        preview_frames = [
-            np.concatenate([frames[c][i] for c in cameras], axis=1) for i in range(frame_count)
-        ]
-        ph, pw = int(preview_frames[0].shape[0]), int(preview_frames[0].shape[1])
-        writer = cv2.VideoWriter(
-            str(output_dir / "preview.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), fps, (pw, ph)
-        )
-        if not writer.isOpened():
-            raise RuntimeError(f"Failed to open video writer: {output_dir / 'preview.mp4'}")
-        try:
-            for frame in preview_frames:
-                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        finally:
-            writer.release()
-        saved.append(str(output_dir / "preview.mp4"))
+                cv2.imwrite(
+                    str(cam_dir / f"{index:04d}.png"),
+                    cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
+                )
+        video_path = output_dir / f"{camera_name}.mp4"
+        write_h264_video(cam_frames, video_path, fps=fps)
+        saved.append(str(video_path))
     return saved
+
+
+
+def _preview_cell(
+    frame: np.ndarray,
+    *,
+    size: tuple[int, int],
+    label: str,
+) -> np.ndarray:
+    """Letterbox one RGB frame into a labelled preview cell."""
+    target_height, target_width = size
+    height, width = frame.shape[:2]
+    scale = min(target_width / width, target_height / height)
+    resized_width = max(1, round(width * scale))
+    resized_height = max(1, round(height * scale))
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(
+        frame,
+        (resized_width, resized_height),
+        interpolation=interpolation,
+    )
+    cell = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+    top = (target_height - resized_height) // 2
+    left = (target_width - resized_width) // 2
+    cell[top : top + resized_height, left : left + resized_width] = resized
+    cv2.rectangle(cell, (0, 0), (min(target_width, 240), 34), (0, 0, 0), -1)
+    cv2.putText(
+        cell,
+        label,
+        (8, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return cell
+
+
+def _save_preview(
+    *,
+    gt: dict[str, list[np.ndarray]],
+    gen: dict[str, list[np.ndarray]],
+    skeleton: dict[str, list[np.ndarray]],
+    plucker: dict[str, list[np.ndarray]],
+    camera_names: tuple[str, ...],
+    path: Path,
+    fps: int,
+) -> str:
+    """Write one camera-row x GT/GEN/SKELETON/PLUCKER-column preview."""
+    streams = {
+        "GT": gt,
+        "GEN": gen,
+        "SKELETON": skeleton,
+        "PLUCKER": plucker,
+    }
+    for stream_name, camera_frames in streams.items():
+        missing = sorted(set(camera_names) - set(camera_frames))
+        if missing:
+            raise ValueError(f"{stream_name} is missing cameras: {missing}")
+    frame_count = min(
+        len(streams[stream_name][camera])
+        for stream_name in streams
+        for camera in camera_names
+    )
+    if frame_count <= 0:
+        raise ValueError("cannot create preview without frames")
+
+    target_height, target_width = gen[camera_names[0]][0].shape[:2]
+    preview_frames = []
+    for index in range(frame_count):
+        rows = []
+        for camera in camera_names:
+            cells = [
+                _preview_cell(
+                    streams[stream_name][camera][index],
+                    size=(target_height, target_width),
+                    label=f"{stream_name} / {camera}",
+                )
+                for stream_name in streams
+            ]
+            rows.append(np.concatenate(cells, axis=1))
+        preview_frames.append(np.concatenate(rows, axis=0))
+    write_h264_video(preview_frames, path, fps=fps)
+    return str(path)
 
 
 def main() -> None:
@@ -215,9 +336,8 @@ def main() -> None:
     for required in ("meta.json", "temporal.json"):
         if not (sample_dir / required).is_file():
             raise SystemExit(
-                f"{required} not found in {sample_dir} — expected the v2 rig format "
-                f"(meta.json with cameras/mjcf_path, temporal.json with step_qpos; "
-                f"migrate legacy samples with scripts/migrate_samples.py)"
+                f"{required} not found in {sample_dir} — expected the XML environment format "
+                f"(meta.json with camera names/mjcf_path, temporal.json with states)"
             )
     if not Path(weights_dir).is_dir():
         raise SystemExit(f"weights dir not found: {weights_dir}")
@@ -254,10 +374,16 @@ def main() -> None:
         meta["phases"]["create"] = {"seconds": create_s}
 
         aggregated: dict[str, list[np.ndarray]] = {}
+        aggregated_skeleton: dict[str, list[np.ndarray]] = {}
+        aggregated_plucker: dict[str, list[np.ndarray]] = {}
         total_step_s = 0.0
         for i, step_data in enumerate(sample["steps"]):
             t0 = perf_counter()
-            frames = runner.step(seed=args.seed, **step_data)
+            frames, skeleton_frames, plucker_frames = runner.step(
+                **step_data,
+                return_skeleton=True,
+                return_plucker=True,
+            )
             step_s = perf_counter() - t0
             total_step_s += step_s
             ssummary = {c: len(f) for c, f in frames.items()}
@@ -268,11 +394,51 @@ def main() -> None:
             meta["phases"][f"step_{i:02d}"] = {"seconds": step_s}
             for camera, cam_frames in frames.items():
                 aggregated.setdefault(camera, []).extend(cam_frames)
+            for camera, cam_frames in skeleton_frames.items():
+                aggregated_skeleton.setdefault(camera, []).extend(cam_frames)
+            for camera, cam_frames in plucker_frames.items():
+                aggregated_plucker.setdefault(camera, []).extend(cam_frames)
     finally:
         runner.close()
 
     output_dir = Path(args.output_dir)
-    saved = _save_frames(aggregated, output_dir, fps=args.fps, save_images=args.save_images)
+    frame_counts = {camera: len(frames) for camera, frames in aggregated.items()}
+    gt_frames = _read_gt_frames(sample["gt_videos"], frame_counts)
+    saved = {
+        "gen": _save_frames(
+            aggregated,
+            output_dir / "gen",
+            fps=args.fps,
+            save_images=args.save_images,
+        ),
+        "gt": _save_frames(
+            gt_frames,
+            output_dir / "gt",
+            fps=args.fps,
+            save_images=args.save_images,
+        ),
+        "skeleton": _save_frames(
+            aggregated_skeleton,
+            output_dir / "skeleton",
+            fps=args.fps,
+            save_images=args.save_images,
+        ),
+        "plucker": _save_frames(
+            aggregated_plucker,
+            output_dir / "plucker",
+            fps=args.fps,
+            save_images=args.save_images,
+        ),
+    }
+    saved["preview"] = _save_preview(
+        gt=gt_frames,
+        gen=aggregated,
+        skeleton=aggregated_skeleton,
+        plucker=aggregated_plucker,
+        camera_names=sample["camera_names"],
+        path=output_dir / "preview.mp4",
+        fps=args.fps,
+    )
     meta["rollout"] = {c: len(f) for c, f in aggregated.items()}
     meta["outputs"] = saved
     (output_dir / "run_meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")

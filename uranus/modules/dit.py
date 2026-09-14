@@ -315,7 +315,7 @@ def make_spatial_temporal_block_pattern(num_layers: int, use_spatial_temporal_at
     runtime branching."""
     if not use_spatial_temporal_attention:
         return [None] * num_layers
-    return ["temporal" if (i // 2) % 2 == 0 else "spatial" for i in range(num_layers)]
+    return ["temporal" if i % 2 == 0 else "spatial" for i in range(num_layers)]
 
 
 class _FactorizedSelfAttention(nn.Module):
