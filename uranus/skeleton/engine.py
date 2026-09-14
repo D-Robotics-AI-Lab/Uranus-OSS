@@ -5,16 +5,14 @@ session (``create``) and persists for its lifetime; every ``step`` frame goes
 through ``set_state`` once and all cameras share the resulting FK.
 
 The MJCF is the environment source of truth: robot geometry, default state,
-state-to-joint mapping, camera mounts, camera poses, and camera intrinsics all
-live in XML. ``temporal.json`` carries joint positions, compact gripper state,
-and a base-to-world robot transform.
+camera mounts, camera poses, and camera intrinsics live in XML.
+``temporal.json`` carries complete MuJoCo qpos vectors and per-frame 4x4
+robot-to-world transforms.
 
 Validation errors raise ``ValueError``.
 """
 
 from __future__ import annotations
-
-import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -30,8 +28,6 @@ from .specs import (
 # MuJoCo cameras look along local -Z with +Y up.  Dataset calibration and the
 # renderer use the OpenCV convention (+Z forward, +Y down).
 _MUJOCO_TO_CV = np.diag([1.0, -1.0, -1.0, 1.0])
-_STATE_FIELDS = ("joint_positions", "gripper")
-_FRAME_FIELDS = (*_STATE_FIELDS, "robot_transform")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -46,40 +42,6 @@ def _mat4(xpos, xmat) -> np.ndarray:
     return M
 
 
-def _robot_transform(value) -> np.ndarray:
-    """Build a matrix from ``{xyz, quaternion}`` with an xyzw quaternion."""
-    _require(isinstance(value, dict), "robot_transform must be an object")
-    _require(
-        set(value) == {"xyz", "quaternion"},
-        "robot_transform must contain exactly xyz and quaternion",
-    )
-    xyz = np.asarray(value["xyz"], dtype=np.float64).reshape(-1)
-    quaternion = np.asarray(value["quaternion"], dtype=np.float64).reshape(-1)
-    _require(xyz.shape == (3,), f"robot_transform.xyz must have shape (3,), got {xyz.shape}")
-    _require(
-        quaternion.shape == (4,),
-        f"robot_transform.quaternion must have shape (4,), got {quaternion.shape}",
-    )
-    _require(
-        bool(np.all(np.isfinite(xyz))) and bool(np.all(np.isfinite(quaternion))),
-        "robot_transform must be finite",
-    )
-    x, y, z, w = quaternion
-    norm = float(np.dot(quaternion, quaternion))
-    _require(norm > 1e-12, "robot_transform.quaternion must be non-zero")
-    scale = 2.0 / norm
-    matrix = np.eye(4, dtype=np.float64)
-    matrix[:3, :3] = np.array(
-        [
-            [1 - scale * (y * y + z * z), scale * (x * y - z * w), scale * (x * z + y * w)],
-            [scale * (x * y + z * w), 1 - scale * (x * x + z * z), scale * (y * z - x * w)],
-            [scale * (x * z - y * w), scale * (y * z + x * w), 1 - scale * (x * x + y * y)],
-        ]
-    )
-    matrix[:3, 3] = xyz
-    return matrix
-
-
 class SkeletonEngine:
     """MuJoCo FK engine bound to one MJCF model and one rig configuration."""
 
@@ -91,35 +53,18 @@ class SkeletonEngine:
 
         self._has_state = False
         self._T = np.eye(4, dtype=np.float64)
-        key_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_KEY, "uranus_default"
-        )
-        self._default_qpos = (
-            np.asarray(self.model.key_qpos[key_id], dtype=np.float64).copy()
-            if key_id >= 0
-            else np.asarray(self.model.qpos0, dtype=np.float64).copy()
-        )
-        self._state_qpos_addresses = self._load_state_qpos_addresses(rig.mjcf_path)
-        self._gripper_mapping = self._load_gripper_mapping(rig.mjcf_path)
 
         # Bind every spec name -> id once, fail fast (mirrors legacy _require_name).
         self._body_ids: dict[str, int] = {}
         self._site_ids: dict[str, int] = {}
-        self._mount_ids: list[int | None] = []
         self._camera_ids: dict[str, int] = {}
 
         for camera in rig.cameras:
             camera_id = mujoco.mj_name2id(
                 self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera.name
             )
-            if camera_id >= 0:
-                self._camera_ids[camera.name] = camera_id
-            elif camera.extrinsic_rel is None:
-                raise ValueError(f"camera {camera.name!r} not found in {rig.mjcf_path}")
-            if camera.mount_body is not None:
-                self._mount_ids.append(self._require_body(camera.mount_body))
-            else:
-                self._mount_ids.append(None)
+            _require(camera_id >= 0, f"camera {camera.name!r} not found in {rig.mjcf_path}")
+            self._camera_ids[camera.name] = camera_id
         for ee in rig.end_effectors:
             if ee.object_type == "site":
                 self._require_site(ee.object_name)
@@ -147,105 +92,6 @@ class SkeletonEngine:
 
         mujoco.mj_forward(self.model, self.data)
 
-    def _load_state_qpos_addresses(self, mjcf_path: str) -> dict[str, tuple[int, ...]]:
-        """Read the exported joint/gripper order from MJCF ``<custom>``."""
-        root = ET.parse(mjcf_path).getroot()
-        joint_names: dict[str, list[str]] = {field: [] for field in _STATE_FIELDS}
-        for field in _STATE_FIELDS:
-            xml_name = (
-                "uranus_joint_names"
-                if field == "joint_positions"
-                else "uranus_gripper_joints"
-            )
-            element = root.find(f"./custom/text[@name='{xml_name}']")
-            if field == "joint_positions" and element is None:
-                # Compatibility with format-version 7 development exports.
-                element = root.find("./custom/text[@name='uranus_arm_joints']")
-            if element is not None:
-                joint_names[field] = element.get("data", "").split()
-
-        addresses: dict[str, tuple[int, ...]] = {}
-        seen: set[int] = set()
-        for field, names in joint_names.items():
-            values = []
-            for name in names:
-                joint_id = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_JOINT, name
-                )
-                _require(joint_id >= 0, f"state joint {name!r} not found in {mjcf_path}")
-                joint_type = int(self.model.jnt_type[joint_id])
-                _require(
-                    joint_type
-                    in (
-                        int(mujoco.mjtJoint.mjJNT_HINGE),
-                        int(mujoco.mjtJoint.mjJNT_SLIDE),
-                    ),
-                    f"state joint {name!r} must have one qpos value",
-                )
-                address = int(self.model.jnt_qposadr[joint_id])
-                _require(address not in seen, f"state joint {name!r} is listed more than once")
-                seen.add(address)
-                values.append(address)
-            addresses[field] = tuple(values)
-        return addresses
-
-    def _load_gripper_mapping(self, mjcf_path: str) -> dict | None:
-        """Read optional compact-gripper expansion parameters from MJCF."""
-        root = ET.parse(mjcf_path).getroot()
-        inputs = root.find("./custom/text[@name='uranus_gripper_inputs']")
-        if inputs is None:
-            return None
-        input_names = inputs.get("data", "").split()
-        _require(input_names, "uranus_gripper_inputs must not be empty")
-        modes_element = root.find(
-            "./custom/text[@name='uranus_gripper_input_modes']"
-        )
-        modes = modes_element.get("data", "").split() if modes_element is not None else []
-        _require(
-            len(modes) == len(input_names),
-            "uranus_gripper_input_modes must match uranus_gripper_inputs",
-        )
-
-        def numbers(name: str) -> np.ndarray:
-            element = root.find(f"./custom/numeric[@name='{name}']")
-            _require(element is not None, f"missing XML custom numeric {name}")
-            return np.asarray(
-                [float(value) for value in element.get("data", "").split()],
-                dtype=np.float64,
-            )
-
-        ranges = numbers("uranus_gripper_input_ranges")
-        target_indices_raw = numbers("uranus_gripper_target_indices")
-        target_scales = numbers("uranus_gripper_target_scales")
-        target_offsets = numbers("uranus_gripper_target_offsets")
-        target_count = len(self._state_qpos_addresses["gripper"])
-        _require(
-            ranges.shape == (2 * len(input_names),),
-            "uranus_gripper_input_ranges must contain low/high per input",
-        )
-        _require(
-            target_indices_raw.shape == target_scales.shape == target_offsets.shape == (target_count,),
-            "gripper target mapping must match uranus_gripper_joints",
-        )
-        target_indices = target_indices_raw.astype(np.int64)
-        _require(
-            bool(np.all(target_indices_raw == target_indices))
-            and bool(np.all((0 <= target_indices) & (target_indices < len(input_names)))),
-            "uranus_gripper_target_indices contains an invalid input index",
-        )
-        _require(
-            all(mode in {"clip", "g1_closure"} for mode in modes),
-            f"unsupported gripper input mode in {modes}",
-        )
-        return {
-            "input_names": tuple(input_names),
-            "modes": tuple(modes),
-            "ranges": ranges.reshape(-1, 2),
-            "target_indices": target_indices,
-            "target_scales": target_scales,
-            "target_offsets": target_offsets,
-        }
-
     # ---------------------------------------------------------------- naming
 
     def _require_body(self, name: str) -> int:
@@ -268,99 +114,13 @@ class SkeletonEngine:
 
     # ---------------------------------------------------------------- state
 
-    def set_state(self, state) -> None:
-        """Set one frame and run FK.
-
-        New samples pass ``{"joint_positions": [...], "gripper": [...]}``;
-        each vector is mapped through joint names declared in the XML. A
-        complete qpos vector and the old ``arm`` key are accepted for
-        compatibility with existing callers.
-        """
-        structured = isinstance(state, dict) and any(
-            field in state for field in (*_FRAME_FIELDS, "arm")
-        )
-        if structured:
-            state = dict(state)
-            if "arm" in state and "joint_positions" not in state:
-                state["joint_positions"] = state.pop("arm")
-            missing = [field for field in _FRAME_FIELDS if field not in state]
-            _require(not missing, f"state is missing fields: {missing}")
-            extra = sorted(set(state) - set(_FRAME_FIELDS))
-            _require(not extra, f"state has unsupported fields: {extra}")
-            _require(
-                any(self._state_qpos_addresses.values()),
-                "structured state requires uranus_joint_names and "
-                "uranus_gripper_joints in the MJCF <custom> section",
-            )
-            vector = self._default_qpos.copy()
-            joint_positions = np.asarray(
-                state["joint_positions"], dtype=np.float64
-            ).reshape(-1)
-            joint_addresses = self._state_qpos_addresses["joint_positions"]
-            _require(
-                len(joint_positions) == len(joint_addresses),
-                "state.joint_positions must have length "
-                f"{len(joint_addresses)}, got {len(joint_positions)}",
-            )
-            vector[list(joint_addresses)] = joint_positions
-
-            gripper = np.asarray(state["gripper"], dtype=np.float64).reshape(-1)
-            gripper_addresses = self._state_qpos_addresses["gripper"]
-            if self._gripper_mapping is None:
-                _require(
-                    len(gripper) == len(gripper_addresses),
-                    f"state.gripper must have length {len(gripper_addresses)}, got {len(gripper)}",
-                )
-                vector[list(gripper_addresses)] = gripper
-            else:
-                mapping = self._gripper_mapping
-                expected = len(mapping["input_names"])
-                _require(
-                    len(gripper) == expected,
-                    f"state.gripper must have length {expected}, got {len(gripper)}",
-                )
-                _require(
-                    bool(np.all(np.isfinite(gripper))),
-                    "state.gripper must be finite",
-                )
-                inputs = gripper.copy()
-                for index, mode in enumerate(mapping["modes"]):
-                    if mode == "g1_closure":
-                        value = inputs[index]
-                        inputs[index] = (
-                            np.clip(value, 0.0, 1.0)
-                            if abs(value) <= 1.0
-                            else np.clip((value - 35.0) / 85.0, 0.0, 1.0)
-                        )
-                    else:
-                        low, high = mapping["ranges"][index]
-                        inputs[index] = np.clip(inputs[index], low, high)
-                expanded = (
-                    mapping["target_scales"]
-                    * inputs[mapping["target_indices"]]
-                    + mapping["target_offsets"]
-                )
-                vector[list(gripper_addresses)] = expanded
-            self._T = _robot_transform(state["robot_transform"])
-        else:
-            vector = np.asarray(state, dtype=np.float64).reshape(-1)
-            self._T = np.eye(4, dtype=np.float64)
-        _require(
-            vector.shape[0] == self.model.nq,
-            f"qpos must have length {self.model.nq}, got {vector.shape[0]}",
-        )
-        _require(bool(np.all(np.isfinite(vector))), "qpos must be finite")
-
+    def set_state(self, frame: dict) -> None:
+        """Set one complete-qpos frame and run FK."""
+        self._T = np.asarray(
+            frame["robot2world_transform"], dtype=np.float64
+        ).reshape(4, 4)
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[:] = vector
-        # Clip every limited joint to its range (idempotent on already-clipped
-        # migration output; protects against out-of-range telemetry).
-        for jid in range(self.model.njnt):
-            if self.model.jnt_limited[jid]:
-                adr = self.model.jnt_qposadr[jid]
-                lo, hi = self.model.jnt_range[jid]
-                self.data.qpos[adr] = np.clip(self.data.qpos[adr], lo, hi)
-
+        self.data.qpos[:] = np.asarray(frame["state"], dtype=np.float64)
         mujoco.mj_forward(self.model, self.data)
         self._has_state = True
 
@@ -380,23 +140,10 @@ class SkeletonEngine:
         return self._T @ self.body_pose_model(body_name)
 
     def compose_camera_extrinsics(self) -> list[np.ndarray]:
-        """World-to-camera 4x4 for every rig camera, in rig order.
-
-        XML cameras use their MuJoCo-composed world pose.  Deprecated v2
-        ``CameraSpec`` transforms remain readable for old samples.
-        """
+        """World-to-camera 4x4 for every XML camera, in rig order."""
         self._require_state()
         result: list[np.ndarray] = []
-        for camera, mount_id in zip(self.rig.cameras, self._mount_ids):
-            if camera.extrinsic_rel is not None:
-                if mount_id is None:
-                    result.append(np.asarray(camera.extrinsic_rel, dtype=np.float64).copy())
-                else:
-                    M = _mat4(self.data.xpos[mount_id], self.data.xmat[mount_id])
-                    result.append(
-                        np.asarray(camera.extrinsic_rel, dtype=np.float64) @ np.linalg.inv(M)
-                    )
-                continue
+        for camera in self.rig.cameras:
             camera_id = self._camera_ids[camera.name]
             M_cam = _mat4(self.data.cam_xpos[camera_id], self.data.cam_xmat[camera_id])
             M_cam = self._T @ M_cam
@@ -539,14 +286,9 @@ class SkeletonEngine:
     def camera_intrinsics(self, camera: CameraSpec | str) -> np.ndarray:
         """Return the 3x3 OpenCV intrinsic matrix declared in the XML."""
         name = camera if isinstance(camera, str) else camera.name
-        camera_spec = next((item for item in self.rig.cameras if item.name == name), None)
-        if camera_spec is None:
+        if name not in self._camera_ids:
             raise KeyError(f"unknown camera {name!r}")
-        camera_id = self._camera_ids.get(name)
-        if camera_id is None:
-            if camera_spec.intrinsics is None:
-                raise ValueError(f"camera {name!r} has no intrinsic calibration")
-            return np.asarray(camera_spec.intrinsics, dtype=np.float64).copy()
+        camera_id = self._camera_ids[name]
         fx, fy, cx, cy = np.asarray(self.model.cam_intrinsic[camera_id], dtype=np.float64)
         if not np.all(np.isfinite([fx, fy, cx, cy])) or fx <= 0 or fy <= 0:
             raise ValueError(f"invalid intrinsic calibration for camera {name!r}")
