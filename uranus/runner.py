@@ -22,9 +22,9 @@ Flow:
     incrementally VAE-decodes 4 video frames. Returns per-camera uint8 frames.
 
 Cameras and their mounts are configured once in the MJCF passed to ``create``;
-steps carry joint positions, compact gripper state, and a robot transform. The
-composed XML camera extrinsics are shared by the skeleton renderer and Plücker
-conditioning.
+steps carry complete MuJoCo qpos vectors and per-frame 4x4 robot-to-world
+transforms. The composed XML camera extrinsics are shared by the skeleton
+renderer and Plücker conditioning.
 
 Single-session semantics: ``create`` starts a new generation (an active
 session is silently replaced), ``step`` advances it, ``close`` releases it.
@@ -87,47 +87,14 @@ def parse_dtype(dtype_name: str) -> torch.dtype:
         ) from None
 
 
-def parse_frame(frame) -> np.ndarray | dict[str, Any]:
-    """Normalize one joint/gripper/robot-transform frame."""
-    if isinstance(frame, dict):
-        fields = {"joint_positions", "gripper", "robot_transform"}
-        legacy_fields = {"arm", "gripper", "robot_transform"}
-        if any(field in frame for field in fields | {"arm"}):
-            expected = legacy_fields if "arm" in frame else fields
-            missing = sorted(expected - set(frame))
-            extra = sorted(set(frame) - expected)
-            if missing or extra:
-                raise ValueError(
-                    "state must contain exactly "
-                    "joint_positions/gripper/robot_transform; "
-                    f"missing={missing}, extra={extra}"
-                )
-            transform = frame["robot_transform"]
-            if not isinstance(transform, dict):
-                raise ValueError("robot_transform must be an object")
-            return {
-                "joint_positions": np.asarray(
-                    frame.get("joint_positions", frame.get("arm")), dtype=np.float64
-                )
-                .reshape(-1)
-                .tolist(),
-                "gripper": np.asarray(frame["gripper"], dtype=np.float64)
-                .reshape(-1)
-                .tolist(),
-                "robot_transform": {
-                    "xyz": np.asarray(transform.get("xyz", []), dtype=np.float64)
-                    .reshape(-1)
-                    .tolist(),
-                    "quaternion": np.asarray(
-                        transform.get("quaternion", []), dtype=np.float64
-                    )
-                    .reshape(-1)
-                    .tolist(),
-                },
-            }
-        # Compatibility with the previous exported frame wrapper.
-        return np.asarray(frame["observation.state"], dtype=np.float64)
-    return np.asarray(frame, dtype=np.float64)
+def parse_frame(frame) -> dict[str, Any]:
+    """Normalize one current-format full-qpos/robot-to-world frame."""
+    return {
+        "state": np.asarray(frame["state"], dtype=np.float64).reshape(-1).tolist(),
+        "robot2world_transform": np.asarray(
+            frame["robot2world_transform"], dtype=np.float64
+        ).tolist(),
+    }
 
 
 @dataclass
@@ -205,33 +172,24 @@ class UranusRunner:
         prompt: str,
         mjcf_path: str,
         ref_cam_images: tuple[bytes, ...],
-        ref_qpos: np.ndarray | dict[str, Any],
+        ref_qpos: dict[str, Any],
         cameras: list[CameraSpec] | tuple[CameraSpec, ...],
         end_effectors: list[EESpec] | tuple[EESpec, ...] | None = None,
         skeleton: SkeletonSpec | None = None,
-        camera_names: tuple[str, ...] | None = None,
         seed: int = 1,
     ) -> None:
         """Start a new generation from the reference frame.
 
-        ``ref_qpos`` contains joint positions, gripper, and robot transform
-        state using the joint order declared by the MJCF, or a full qpos vector
-        for compatibility.
+        ``ref_qpos`` contains a complete MJCF qpos vector and its per-frame
+        4x4 robot-to-world transform.
         ``cameras`` is the ordered rig — its order fixes camera order for the
         whole session (KV streams, decode order, output naming).
-        ``camera_names`` is accepted for backward compatibility and must match
-        the rig names (order-insensitively checked as a set).
         """
-        camera_names = tuple(camera_names) if camera_names is not None else tuple(c.name for c in cameras)
+        camera_names = tuple(camera.name for camera in cameras)
         if len(ref_cam_images) != len(cameras):
             raise ValueError(
                 f"ref_cam_images count must equal rig size, "
                 f"got {len(ref_cam_images)} images for {len(cameras)} cameras"
-            )
-        if set(camera_names) != {c.name for c in cameras}:
-            raise ValueError(
-                f"camera_names {camera_names} do not match rig names "
-                f"{tuple(c.name for c in cameras)}"
             )
 
         rig = RigSpec(
@@ -345,7 +303,7 @@ class UranusRunner:
     def step(
         self,
         *,
-        qpos: tuple[np.ndarray | dict[str, Any], ...],
+        qpos: tuple[dict[str, Any], ...],
         num_step: int,
         seed: int | None = None,
         return_skeleton: bool = False,
@@ -363,10 +321,10 @@ class UranusRunner:
 
         The frame count is rounded up to a multiple of the temporal interval
         (4); short sequences are padded by repeating the last frame's inputs.
-        Each entry contains joint positions, gripper, and robot transform state
-        (or is a legacy full-qpos vector). Returns per-camera RGB frames with
-        exactly the rounded-up frame count. Optional visualization outputs are
-        appended to the return tuple in skeleton, then Plücker order.
+        Each entry contains complete MJCF qpos and a 4x4 robot-to-world
+        transform. Returns per-camera RGB frames with exactly the rounded-up
+        frame count. Optional visualization outputs are appended to the return
+        tuple in skeleton, then Plücker order.
         """
         if self._state is None or self._meta is None:
             raise RuntimeError("create() must be called before step()")

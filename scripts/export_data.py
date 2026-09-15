@@ -2,10 +2,10 @@
 
 Each exported sample contains:
 
-* one self-contained MJCF with camera calibration/mounts and state mapping;
+* one self-contained MJCF with camera calibration and mounts;
 * ``meta.json`` with prompt, paths, and rendering configuration;
-* ``temporal.json`` with a joint-group description and frames containing
-  ``joint_positions``, compact ``gripper``, and ``robot_transform`` state.
+* ``temporal.json`` whose ``step_qpos`` frames contain complete MuJoCo qpos
+  vectors and per-frame robot-to-world transforms.
 
 The exporter reads both local and TOS Lance datasets through ``uranus-data``.
 """
@@ -162,12 +162,9 @@ def _pose_to_attrs(matrix: np.ndarray) -> tuple[str, str]:
     )
 
 
-def _serialize_robot_transform(matrix: np.ndarray) -> dict[str, list[float]]:
-    """Serialize a base-to-world matrix as xyz + xyzw quaternion."""
-    pos, quaternion = _pose_to_attrs(matrix)
-    xyz = [float(value) for value in pos.split()]
-    w, x, y, z = (float(value) for value in quaternion.split())
-    return {"xyz": xyz, "quaternion": [x, y, z, w]}
+def _serialize_robot_transform(matrix: np.ndarray) -> list[list[float]]:
+    """Serialize the robot-to-world transform as a 4x4 matrix."""
+    return np.asarray(matrix, dtype=np.float64).reshape(4, 4).tolist()
 
 
 def _asset_for_robot(robot_name: str) -> Path:
@@ -327,262 +324,6 @@ def _build_robot_frames(robot, frames: list[dict]):
     return qpos, poses, robot_to_world, model_to_robot
 
 
-def _joint_position_names(robot_name: str, robot) -> tuple[str, ...]:
-    configured = tuple(
-        name
-        for group in getattr(robot, "arm_joint_names", ())
-        for name in group
-    )
-    if configured:
-        return configured
-    if robot_name == "Panda Franka":
-        return tuple(f"joint{index}" for index in range(1, 8))
-    if robot_name == "Agibot G1":
-        # Torso joints affect both wrists and are not part of the global base
-        # pose, so they remain in the articulated joint vector.
-        return ("joint_lift_body", "joint_body_pitch") + tuple(
-            f"Joint{index}_{side}"
-            for side in ("l", "r")
-            for index in range(1, 8)
-        )
-    if robot_name == "Agibot G2":
-        # Body/head articulation remains observable after rebasing away the
-        # global mobile-base transform, so keep it in the joint vector.
-        body_and_head = tuple(
-            [*(f"idx0{index}_body_joint{index}" for index in range(1, 6))]
-            + [*(f"idx1{index}_head_joint{index}" for index in range(1, 4))]
-        )
-        return body_and_head + tuple(
-            f"idx{prefix}{index}_arm_{side}_joint{index}"
-            for prefix, side in ((2, "l"), (6, "r"))
-            for index in range(1, 8)
-        )
-    raise ValueError(f"no joint-position mapping for robot {robot_name!r}")
-
-
-def _joint_groups(
-    robot_name: str,
-    robot,
-    joint_names: tuple[str, ...],
-) -> dict[str, dict[str, list]]:
-    """Describe semantic slices of ``joint_positions`` once per sample."""
-    if robot_name == "Agibot G1":
-        layout = (("torso", 2), ("left_arm", 7), ("right_arm", 7))
-    elif robot_name == "Agibot G2":
-        layout = (
-            ("body", 5),
-            ("head", 3),
-            ("left_arm", 7),
-            ("right_arm", 7),
-        )
-    else:
-        configured = tuple(
-            tuple(group) for group in getattr(robot, "arm_joint_names", ())
-        )
-        if configured and sum(map(len, configured)) == len(joint_names):
-            lengths = tuple(map(len, configured))
-        elif len(ROBOT_FLANGES[robot_name]) == 2:
-            if len(joint_names) % 2:
-                raise ValueError(
-                    f"cannot split {len(joint_names)} joints between two arms"
-                )
-            lengths = (len(joint_names) // 2,) * 2
-        else:
-            lengths = (len(joint_names),)
-        labels = (
-            ("arm",)
-            if len(lengths) == 1
-            else ("left_arm", "right_arm")
-            if len(lengths) == 2
-            else tuple(f"arm_{index}" for index in range(len(lengths)))
-        )
-        layout = tuple(zip(labels, lengths, strict=True))
-
-    if sum(length for _, length in layout) != len(joint_names):
-        raise ValueError(
-            f"joint group layout for {robot_name} has "
-            f"{sum(length for _, length in layout)} entries, "
-            f"but joint_positions has {len(joint_names)}"
-        )
-    groups = {}
-    start = 0
-    for label, length in layout:
-        stop = start + length
-        groups[label] = {
-            "indices": list(range(start, stop)),
-            "joints": list(joint_names[start:stop]),
-        }
-        start = stop
-    return groups
-
-
-def _is_descendant(model, body_id: int, ancestor_id: int) -> bool:
-    while body_id > 0:
-        if body_id == ancestor_id:
-            return True
-        body_id = int(model.body_parentid[body_id])
-    return False
-
-
-def _gripper_joint_names(
-    robot_name: str, robot, joint_position_names: tuple[str, ...]
-) -> tuple[str, ...]:
-    flange_ids = {
-        mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_BODY, name)
-        for name in ROBOT_FLANGES[robot_name]
-    }
-    if any(body_id < 0 for body_id in flange_ids):
-        raise ValueError(f"missing flange body for {robot_name}")
-    articulated_names = set(joint_position_names)
-    names = []
-    for joint_id in range(robot.model.njnt):
-        name = mujoco.mj_id2name(robot.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
-        body_id = int(robot.model.jnt_bodyid[joint_id])
-        joint_type = int(robot.model.jnt_type[joint_id])
-        if (
-            name not in articulated_names
-            and joint_type
-            in (
-                int(mujoco.mjtJoint.mjJNT_HINGE),
-                int(mujoco.mjtJoint.mjJNT_SLIDE),
-            )
-            and any(_is_descendant(robot.model, body_id, flange) for flange in flange_ids)
-        ):
-            names.append(name)
-    if not names:
-        raise ValueError(f"no gripper joints found below the flange for {robot_name}")
-    return tuple(names)
-
-
-def _native_gripper_state(robot_name: str, robot, frame: dict) -> list[float]:
-    """Return one independent Lance gripper value per physical gripper."""
-    state = np.asarray(frame["observation.state"], dtype=np.float64)
-    if robot_name == "Panda Franka":
-        return [float(state.reshape(-1)[7])]
-    if robot_name in {"Agibot G1", "Agibot G2"}:
-        return state.reshape(2, 9)[:, 7].tolist()
-    if robot_name == "RoboTwin2-ALOHA":
-        return state.reshape(2, 7)[:, 6].tolist()
-    arms = int(robot.num_arms())
-    return state.reshape(arms, 8)[:, 6].tolist()
-
-
-def _gripper_mapping(
-    robot_name: str,
-    robot,
-    gripper_joints: tuple[str, ...],
-) -> dict:
-    """Describe native-gripper -> expanded-MJCF-qpos mapping for the XML."""
-    targets: dict[str, tuple[int, float, float]] = {}
-
-    def add(name: str, input_index: int, scale: float, offset: float = 0.0) -> None:
-        targets[name] = (input_index, scale, offset)
-
-    if robot_name in {"Panda Franka", "UR5"}:
-        max_width = 0.04 if robot_name == "Panda Franka" else 0.085
-        driver_scale = -0.8 / max_width
-        for side in ("right", "left"):
-            add(f"{side}_driver_joint", 0, driver_scale, 0.8)
-            add(f"{side}_coupler_joint", 0, 0.0)
-            add(f"{side}_spring_link_joint", 0, driver_scale, 0.8)
-            add(
-                f"{side}_follower_joint",
-                0,
-                -0.964 * driver_scale,
-                -0.964 * 0.8,
-            )
-        input_names = ["gripper"]
-        input_modes = ["clip"]
-        input_ranges = [(0.0, max_width)]
-    elif robot_name in {"Agibot G1", "Agibot G2"}:
-        if robot_name == "Agibot G1":
-            from uranus_dataset.robot.robot_g1_120s import (
-                LEFT_GRIPPER_JOINT_COEFS,
-                RIGHT_GRIPPER_JOINT_COEFS,
-            )
-
-            input_modes = ["g1_closure", "g1_closure"]
-            input_ranges = [(0.0, 1.0), (0.0, 1.0)]
-            input_scale, input_offset = -0.6, 0.6
-        else:
-            from uranus_dataset.robot.robot_g2_120s import (
-                LEFT_GRIPPER_JOINT_COEFS,
-                RIGHT_GRIPPER_JOINT_COEFS,
-            )
-
-            input_modes = ["clip", "clip"]
-            input_ranges = [(-0.91, 0.0), (-0.91, 0.0)]
-            input_scale, input_offset = 0.6 / 0.91, 0.6
-        for input_index, coefficients in enumerate(
-            (LEFT_GRIPPER_JOINT_COEFS, RIGHT_GRIPPER_JOINT_COEFS)
-        ):
-            for name, coefficient in coefficients.items():
-                add(
-                    name,
-                    input_index,
-                    coefficient * input_scale,
-                    coefficient * input_offset,
-                )
-        input_names = ["left", "right"]
-    elif robot_name == "ARX5":
-        add("gripper_joint1", 0, -0.5)
-        add("gripper_joint2", 0, 0.5)
-        input_names = ["gripper"]
-        input_modes = ["clip"]
-        input_ranges = [(0.0, 1e30)]
-    elif robot_name in {"ALOHA", "DOS-W1"}:
-        pairs = (
-            (("fl_joint8", "fl_joint7"), ("fr_joint8", "fr_joint7"))
-            if robot_name == "ALOHA"
-            else (
-                ("left_eef_joint1", "left_eef_joint2"),
-                ("right_eef_joint1", "right_eef_joint2"),
-            )
-        )
-        for input_index, (negative, positive) in enumerate(pairs):
-            add(negative, input_index, -0.5)
-            add(positive, input_index, 0.5)
-        input_names = ["left", "right"]
-        input_modes = ["clip", "clip"]
-        input_ranges = [(0.0, 1e30), (0.0, 1e30)]
-    elif robot_name == "RoboTwin2-ALOHA":
-        scale = float(robot._GRIPPER_JOINT_MAX)
-        for input_index, prefix in enumerate(("fl", "fr")):
-            add(f"{prefix}_joint7", input_index, scale)
-            add(f"{prefix}_joint8", input_index, scale)
-        input_names = ["left", "right"]
-        input_modes = ["clip", "clip"]
-        input_ranges = [(0.0, 1.0), (0.0, 1.0)]
-    else:
-        raise ValueError(f"no compact gripper mapping for robot {robot_name!r}")
-
-    missing = sorted(set(gripper_joints) - set(targets))
-    extra = sorted(set(targets) - set(gripper_joints))
-    if missing or extra:
-        raise ValueError(
-            f"invalid gripper mapping for {robot_name}: missing={missing}, extra={extra}"
-        )
-    ordered = [targets[name] for name in gripper_joints]
-    return {
-        "input_names": input_names,
-        "input_modes": input_modes,
-        "input_ranges": input_ranges,
-        "target_indices": [value[0] for value in ordered],
-        "target_scales": [value[1] for value in ordered],
-        "target_offsets": [value[2] for value in ordered],
-    }
-
-
-def _joint_addresses(model, names: tuple[str, ...]) -> tuple[int, ...]:
-    addresses = []
-    for name in names:
-        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-        if joint_id < 0:
-            raise ValueError(f"joint {name!r} not found")
-        addresses.append(int(model.jnt_qposadr[joint_id]))
-    return tuple(addresses)
-
-
 def _camera_mount(robot_name: str, camera: str) -> str:
     lowered = camera.lower()
     if lowered == "head" and robot_name in ROBOT_HEADS:
@@ -645,79 +386,6 @@ def _ensure_robot_base(root: ET.Element, robot_name: str) -> ET.Element:
         base.append(body)
     worldbody.append(base)
     return base
-
-
-def _set_state_mapping(
-    root: ET.Element,
-    joint_names: tuple[str, ...],
-    gripper_joints: tuple[str, ...],
-    gripper_mapping: dict,
-    default_qpos: np.ndarray,
-) -> None:
-    custom = root.find("custom")
-    if custom is None:
-        custom = ET.SubElement(root, "custom")
-    for xml_name, names in (
-        ("uranus_joint_names", joint_names),
-        ("uranus_gripper_joints", gripper_joints),
-    ):
-        old = custom.find(f"text[@name='{xml_name}']")
-        if old is not None:
-            custom.remove(old)
-        ET.SubElement(
-            custom,
-            "text",
-            {"name": xml_name, "data": " ".join(names)},
-        )
-    legacy = custom.find("text[@name='uranus_arm_joints']")
-    if legacy is not None:
-        custom.remove(legacy)
-
-    text_values = {
-        "uranus_gripper_inputs": gripper_mapping["input_names"],
-        "uranus_gripper_input_modes": gripper_mapping["input_modes"],
-    }
-    for name, values in text_values.items():
-        old = custom.find(f"text[@name='{name}']")
-        if old is not None:
-            custom.remove(old)
-        ET.SubElement(custom, "text", {"name": name, "data": " ".join(values)})
-    numeric_values = {
-        "uranus_gripper_input_ranges": [
-            value for pair in gripper_mapping["input_ranges"] for value in pair
-        ],
-        "uranus_gripper_target_indices": gripper_mapping["target_indices"],
-        "uranus_gripper_target_scales": gripper_mapping["target_scales"],
-        "uranus_gripper_target_offsets": gripper_mapping["target_offsets"],
-    }
-    for name, values in numeric_values.items():
-        old = custom.find(f"numeric[@name='{name}']")
-        if old is not None:
-            custom.remove(old)
-        ET.SubElement(
-            custom,
-            "numeric",
-            {
-                "name": name,
-                "size": str(len(values)),
-                "data": " ".join(f"{float(value):.12g}" for value in values),
-            },
-        )
-
-    keyframe = root.find("keyframe")
-    if keyframe is None:
-        keyframe = ET.SubElement(root, "keyframe")
-    old_key = keyframe.find("key[@name='uranus_default']")
-    if old_key is not None:
-        keyframe.remove(old_key)
-    ET.SubElement(
-        keyframe,
-        "key",
-        {
-            "name": "uranus_default",
-            "qpos": " ".join(f"{value:.12g}" for value in default_qpos),
-        },
-    )
 
 
 def _inject_camera(
@@ -869,20 +537,12 @@ def export_repo(
     frames = _episode_frames(item, child, episode_index)
     qpos, body_poses, robot_to_world, model_to_robot = _build_robot_frames(robot, frames)
 
-    joint_names = _joint_position_names(robot_name, robot)
-    joint_groups = _joint_groups(robot_name, robot, joint_names)
-    gripper_joints = _gripper_joint_names(robot_name, robot, joint_names)
-    gripper_mapping = _gripper_mapping(robot_name, robot, gripper_joints)
-    joint_addresses = _joint_addresses(robot.model, joint_names)
-    states = [
+    step_qpos = [
         {
-            "joint_positions": values[list(joint_addresses)].tolist(),
-            "gripper": _native_gripper_state(robot_name, robot, frame),
-            "robot_transform": _serialize_robot_transform(transform),
+            "state": values.tolist(),
+            "robot2world_transform": _serialize_robot_transform(transform),
         }
-        for frame, values, transform in zip(
-            frames, qpos, robot_to_world, strict=True
-        )
+        for values, transform in zip(qpos, robot_to_world, strict=True)
     ]
 
     first_images = {
@@ -914,7 +574,6 @@ def export_repo(
     root = ET.parse(asset).getroot()
     _bake_model_frame(root, asset, model_to_robot)
     _ensure_robot_base(root, robot_name)
-    _set_state_mapping(root, joint_names, gripper_joints, gripper_mapping, qpos[0])
     for camera in cameras:
         intrinsic, world_to_camera = _camera_calibration(item, camera)
         mount = _camera_mount(robot_name, camera)
@@ -936,12 +595,12 @@ def export_repo(
     ET.indent(root, space="  ")
     xml_path.parent.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(root).write(xml_path, encoding="utf-8", xml_declaration=True)
-    # Fail at export time if custom tags, state names, or camera attributes are invalid.
+    # Fail at export time if the generated environment or cameras are invalid.
     mujoco.MjModel.from_xml_path(str(xml_path))
 
     end_effectors, skeleton = _ee_and_skeleton(robot_name, robot)
     meta = {
-        "format_version": 7,
+        "format_version": 8,
         "prompt": str(item.get("task", "")),
         "mjcf_path": str(xml_path.relative_to(sample_dir)),
         "cameras": cameras,
@@ -966,11 +625,7 @@ def export_repo(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     (sample_dir / "temporal.json").write_text(
-        json.dumps(
-            {"joint_groups": joint_groups, "states": states},
-            ensure_ascii=False,
-        )
-        + "\n",
+        json.dumps({"step_qpos": step_qpos}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     return sample_dir

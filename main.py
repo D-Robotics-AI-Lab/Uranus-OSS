@@ -1,9 +1,9 @@
 """CLI driver for the single-GPU Uranus streaming runner.
 
 Loads one sample directory holding ``meta.json`` (MJCF path, camera names,
-end-effectors, skeleton, prompt) and ``temporal.json`` (a one-time joint-group
-description plus per-frame ``joint_positions``, compact ``gripper``, and
-``robot_transform`` state). Camera calibration and mounting live in the MJCF.
+end-effectors, skeleton, prompt) and ``temporal.json`` (complete MuJoCo
+``step_qpos`` plus per-frame 4x4 robot-to-world transforms). Camera calibration
+and mounting live in the MJCF.
 It drives ``uranus.runner.UranusRunner`` through ``create → N x step`` (models
 are assembled lazily inside the first ``create``), then writes aligned H.264
 GT, generated, skeleton, and Plücker videos plus one comparison preview.
@@ -89,27 +89,7 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
     with (sample_dir / "temporal.json").open("r", encoding="utf-8") as f:
         temporal = json.load(f)
 
-    cameras = []
-    for cam in meta["cameras"]:
-        if isinstance(cam, str):
-            cameras.append(CameraSpec(name=cam))
-        else:
-            cameras.append(
-                CameraSpec(
-                    name=str(cam["name"]),
-                    intrinsics=(
-                        _as_matrix(cam["intrinsics"])
-                        if cam.get("intrinsics") is not None
-                        else None
-                    ),
-                    mount_body=cam.get("mount_body"),
-                    extrinsic_rel=(
-                        _as_matrix(cam["extrinsic_rel"])
-                        if cam.get("extrinsic_rel") is not None
-                        else None
-                    ),
-                )
-            )
+    cameras = [CameraSpec(name=name) for name in meta["cameras"]]
     camera_names = tuple(cam.name for cam in cameras)
 
     skel = meta.get("skeleton") or {}
@@ -129,9 +109,7 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
         gripper_keypoint_overrides=overrides,
     )
 
-    states = temporal.get("states", temporal.get("step_qpos"))
-    if states is None:
-        raise ValueError("temporal.json must contain 'states'")
+    states = temporal["step_qpos"]
     total_step_frames = num_chunks * step_length
     if len(states) < total_step_frames + 1:
         raise ValueError(
@@ -152,7 +130,6 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
         "cameras": cameras,
         "end_effectors": [_build_ee_spec(ee) for ee in meta.get("end_effectors", [])],
         "skeleton": skeleton,
-        "camera_names": camera_names,
     }
     steps = []
     for chunk_index in range(num_chunks):
@@ -337,7 +314,7 @@ def main() -> None:
         if not (sample_dir / required).is_file():
             raise SystemExit(
                 f"{required} not found in {sample_dir} — expected the XML environment format "
-                f"(meta.json with camera names/mjcf_path, temporal.json with states)"
+                f"(meta.json with camera names/mjcf_path, temporal.json with step_qpos)"
             )
     if not Path(weights_dir).is_dir():
         raise SystemExit(f"weights dir not found: {weights_dir}")
