@@ -115,10 +115,17 @@ class SkeletonEngine:
     # ---------------------------------------------------------------- state
 
     def set_state(self, frame: dict) -> None:
-        """Set one complete-qpos frame and run FK."""
-        self._T = np.asarray(
-            frame["robot2world_transform"], dtype=np.float64
-        ).reshape(4, 4)
+        """Set one complete-qpos frame and run FK.
+
+        ``robot2world_transform`` is optional — fixed-base robots omit it and
+        T defaults to identity.
+        """
+        raw_T = frame.get("robot2world_transform")
+        self._T = (
+            np.asarray(raw_T, dtype=np.float64).reshape(4, 4)
+            if raw_T is not None
+            else np.eye(4, dtype=np.float64)
+        )
         mujoco.mj_resetData(self.model, self.data)
         self.data.qpos[:] = np.asarray(frame["state"], dtype=np.float64)
         mujoco.mj_forward(self.model, self.data)

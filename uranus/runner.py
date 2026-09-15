@@ -89,12 +89,13 @@ def parse_dtype(dtype_name: str) -> torch.dtype:
 
 def parse_frame(frame) -> dict[str, Any]:
     """Normalize one current-format full-qpos/robot-to-world frame."""
-    return {
+    result = {
         "state": np.asarray(frame["state"], dtype=np.float64).reshape(-1).tolist(),
-        "robot2world_transform": np.asarray(
-            frame["robot2world_transform"], dtype=np.float64
-        ).tolist(),
     }
+    raw_T = frame.get("robot2world_transform")
+    if raw_T is not None:
+        result["robot2world_transform"] = np.asarray(raw_T, dtype=np.float64).tolist()
+    return result
 
 
 @dataclass
