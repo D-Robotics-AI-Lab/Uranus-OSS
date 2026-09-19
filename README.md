@@ -17,10 +17,8 @@ limitations under the License.
 -->
 
 <p align="center">
-    <br>
-    <img src="assets/figures/logo.svg" width="400"/>
-    <br>
-<p>
+    <img src="assets/figures/logo.svg" width="100%"/>
+</p>
 <p align="center">
     <a href="https://huggingface.co/D-Robotics"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-yellow"></a>
     <a href="https://www.modelscope.cn/models/D-Robotics/Uranus-1.3B"><img alt="ModelScope" src="https://img.shields.io/badge/%F0%9F%A4%96%20ModelScope-8A2BE2"></a>
