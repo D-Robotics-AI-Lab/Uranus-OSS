@@ -17,11 +17,11 @@ limitations under the License.
 -->
 
 <p align="center">
-    <img src="assets/figures/logo.svg" width="100%"/>
+    <img src="assets/figures/logo.png" width="400"/>
 </p>
 <p align="center">
-    <a href="https://huggingface.co/D-Robotics"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-yellow"></a>
-    <a href="https://www.modelscope.cn/models/D-Robotics/Uranus-1.3B"><img alt="ModelScope" src="https://img.shields.io/badge/%F0%9F%A4%96%20ModelScope-8A2BE2"></a>
+    <a href="https://huggingface.co/collections/D-Robotics/uranus"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-yellow"></a>
+    <a href="https://www.modelscope.cn/collections/D-Robotics/Uranus"><img alt="ModelScope" src="https://img.shields.io/badge/%F0%9F%A4%96%20ModelScope-8A2BE2"></a>
     <a href="TODO_TEST_SAMPLES_URL"><img alt="Test Samples" src="https://img.shields.io/badge/%F0%9F%A7%AA%20Test%20Samples-00B4D8"></a>
     <a href="TODO_TECHNICAL_REPORT_URL"><img alt="Technical Report" src="https://img.shields.io/badge/Technical_Report-B31B1B?logo=arxiv&logoColor=white"></a>
     <a href="https://d-robotics-ai-lab.github.io/large-model-team/blog/uranus/"><img alt="Blog" src="https://img.shields.io/badge/Blog-FF7A00?logo=githubpages&logoColor=white"></a>
