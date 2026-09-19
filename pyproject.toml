@@ -14,7 +14,6 @@ dependencies = [
     "torch==2.14.0",
     "tqdm>=4.70.0",
     "transformers>=5.16.1",
-    "uranus-data",
 ]
 
 
@@ -27,5 +26,4 @@ name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 
 [tool.uv.sources]
-uranus-data = { path = "../Uranus-data/dist/uranus_data-0.3.0-py3-none-any.whl" }
 torch = { index = "pytorch-cu126" }

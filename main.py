@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 from time import perf_counter
@@ -48,10 +49,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", type=str, default="bf16")
     parser.add_argument("--height", type=int, default=384)
     parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--num-inference-steps", type=int, default=50)
-    parser.add_argument("--teacher-forcing-window-size", type=int, default=4)
-    parser.add_argument("--step-length", type=int, default=4, help="frames per step call")
-    parser.add_argument("--num-chunks", type=int, default=10, help="step calls (= chunks)")
+    parser.add_argument("--num-inference-steps", type=int, default=None)
+    parser.add_argument("--teacher-forcing-window-size", type=int, default=None)
+    parser.add_argument("--step-length", type=int, default=None)
+    parser.add_argument(
+        "--num-chunks",
+        type=int,
+        default=None,
+        help="step chunks; None uses every step frame in temporal.json, "
+        "padding the trailing partial chunk with the last frame",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-dir", type=str, default="./output")
     parser.add_argument("--fps", type=int, default=10)
@@ -62,6 +69,48 @@ def parse_args() -> argparse.Namespace:
 def _resolve_path(path_str: str, sample_dir: Path) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else sample_dir / path
+
+
+# Mapping from CLI argument name -> metadata.json field name.
+_META_FIELD = {
+    "height": "default_height",
+    "width": "default_width",
+    "num_inference_steps": "num_inference_steps",
+    "teacher_forcing_window_size": "teacher_forcing_window_size",
+    "step_length": "step_length",
+}
+
+
+def _load_weights_metadata(weights_dir: str | Path) -> dict:
+    """Read ``metadata.json`` next to the converted weights.
+
+    Returns an empty dict if the file is absent (older weights dirs). Raises
+    SystemExit on a malformed file so the user gets a clear message instead of
+    a cryptic JSON error later.
+    """
+    path = Path(weights_dir) / "metadata.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"failed to parse {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: expected a JSON object, got {type(data).__name__}")
+    return data
+
+
+def _resolve_arg(name: str, cli_value, weights_meta: dict):
+    """CLI > weights metadata.json; raise if neither provides a value."""
+    if cli_value is not None:
+        return cli_value
+    meta_field = _META_FIELD[name]
+    if meta_field in weights_meta:
+        return weights_meta[meta_field]
+    raise SystemExit(
+        f"{meta_field} is not set: pass --{name.replace('_', '-')} on the CLI "
+        f"or add \"{meta_field}\" to the weights metadata.json"
+    )
 
 
 def _as_matrix(value) -> np.ndarray:
@@ -81,7 +130,7 @@ def _build_ee_spec(ee: dict) -> EESpec:
     )
 
 
-def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
+def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int | None) -> dict:
     """Load one XML-environment sample into runner-ready data."""
     sample_dir = Path(sample_dir)
     with (sample_dir / "meta.json").open("r", encoding="utf-8") as f:
@@ -110,12 +159,34 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
     )
 
     states = temporal["step_qpos"]
+    if len(states) < 1:
+        raise ValueError("temporal.json must contain at least the reference (states[0])")
+
+    step_states = list(states[1:])
+    real_step_frame_count = len(step_states)
+    if num_chunks is None:
+        if real_step_frame_count == 0:
+            raise ValueError(
+                "num_chunks=None but temporal.json has no step frames after the reference"
+            )
+        num_chunks = math.ceil(real_step_frame_count / step_length)
     total_step_frames = num_chunks * step_length
-    if len(states) < total_step_frames + 1:
-        raise ValueError(
-            f"Not enough qpos frames for num_chunks={num_chunks} * step_length={step_length}: "
-            f"need >= {total_step_frames + 1}, got {len(states)}"
-        )
+    if real_step_frame_count < total_step_frames:
+        deficit = total_step_frames - real_step_frame_count
+        if deficit > step_length:
+            raise ValueError(
+                f"Cannot satisfy num_chunks={num_chunks} * step_length={step_length}: "
+                f"need {total_step_frames} step frames, got {real_step_frame_count} "
+                f"(deficit {deficit} > one chunk of {step_length}). "
+                f"Lower --num-chunks or omit it to use all available frames."
+            )
+        # pad the trailing partial chunk with the last frame
+        last = step_states[-1]
+        step_states.extend(dict(last) for _ in range(deficit))
+    elif real_step_frame_count > total_step_frames:
+        # truncate to the requested chunk count
+        step_states = step_states[:total_step_frames]
+        real_step_frame_count = total_step_frames
 
     height = int(meta.get("height", 384))
     width = int(meta.get("width", 640))
@@ -133,10 +204,10 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
     }
     steps = []
     for chunk_index in range(num_chunks):
-        start = chunk_index * step_length + 1
+        start = chunk_index * step_length
         steps.append(
             {
-                "qpos": tuple(states[start : start + step_length]),
+                "qpos": tuple(step_states[start : start + step_length]),
                 "num_step": step_length,
             }
         )
@@ -152,6 +223,7 @@ def load_sample(sample_dir: Path, *, step_length: int, num_chunks: int) -> dict:
         "width": width,
         "create": create,
         "steps": steps,
+        "real_step_frame_count": real_step_frame_count,
     }
 
 
@@ -319,16 +391,38 @@ def main() -> None:
     if not Path(weights_dir).is_dir():
         raise SystemExit(f"weights dir not found: {weights_dir}")
 
-    sample = load_sample(sample_dir, step_length=args.step_length, num_chunks=args.num_chunks)
+    # Resolve model-coupled hyperparameters: explicit CLI flag wins, otherwise
+    # read from the converted-weights metadata.json. If neither is set, the
+    # resolution raises (these are model-coupled and must not silently default).
+    weights_meta = _load_weights_metadata(weights_dir)
+    height = _resolve_arg("height", args.height, weights_meta)
+    width = _resolve_arg("width", args.width, weights_meta)
+    num_inference_steps = _resolve_arg(
+        "num_inference_steps", args.num_inference_steps, weights_meta
+    )
+    teacher_forcing_window_size = _resolve_arg(
+        "teacher_forcing_window_size", args.teacher_forcing_window_size, weights_meta
+    )
+    step_length = _resolve_arg("step_length", args.step_length, weights_meta)
+    print(
+        f"[uranus-cli] config: height={height} width={width} "
+        f"num_inference_steps={num_inference_steps} "
+        f"teacher_forcing_window_size={teacher_forcing_window_size} "
+        f"step_length={step_length} "
+        "(source: explicit CLI flag or weights metadata.json)",
+        flush=True,
+    )
+
+    sample = load_sample(sample_dir, step_length=step_length, num_chunks=args.num_chunks)
     print(
         f"[uranus-cli] sample={sample_dir} cameras={sample['camera_names']} "
         f"robot={sample['robot_type']} chunks={len(sample['steps'])}",
         flush=True,
     )
-    if (sample["height"], sample["width"]) != (args.height, args.width):
+    if (sample["height"], sample["width"]) != (height, width):
         print(
             f"[uranus-cli] WARNING: sample target is {sample['height']}x{sample['width']} "
-            f"but generating at {args.height}x{args.width}",
+            f"but generating at {height}x{width}",
             flush=True,
         )
 
@@ -336,10 +430,10 @@ def main() -> None:
         weights_dir,
         device=args.device,
         dtype=args.dtype,
-        height=args.height,
-        width=args.width,
-        num_inference_steps=args.num_inference_steps,
-        teacher_forcing_window_size=args.teacher_forcing_window_size,
+        height=height,
+        width=width,
+        num_inference_steps=num_inference_steps,
+        teacher_forcing_window_size=teacher_forcing_window_size,
     )
 
     meta: dict = {"phases": {}}
@@ -377,6 +471,14 @@ def main() -> None:
                 aggregated_plucker.setdefault(camera, []).extend(cam_frames)
     finally:
         runner.close()
+
+    # Trim padded trailing frames so the final videos only contain real frames
+    # from temporal.json (the last chunk may have been padded with the last
+    # frame to fill a partial chunk when --num-chunks is None).
+    real_step_frame_count = sample["real_step_frame_count"]
+    for stream in (aggregated, aggregated_skeleton, aggregated_plucker):
+        for camera in list(stream):
+            stream[camera] = stream[camera][:real_step_frame_count]
 
     output_dir = Path(args.output_dir)
     frame_counts = {camera: len(frames) for camera, frames in aggregated.items()}
