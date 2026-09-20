@@ -17,16 +17,17 @@ limitations under the License.
 -->
 
 <p align="center">
-    <img src="assets/figures/logo.png" width="400"/>
+    <img src="https://github.com/D-Robotics-AI-Lab/Uranus-OSS/raw/main/assets/figures/logo.png" width="400"/>
 </p>
 <p align="center">
     <a href="https://huggingface.co/collections/D-Robotics/uranus"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-yellow"></a>
     <a href="https://www.modelscope.cn/collections/D-Robotics/Uranus"><img alt="ModelScope" src="https://img.shields.io/badge/%F0%9F%A4%96%20ModelScope-8A2BE2"></a>
-    <a href="TODO_TEST_SAMPLES_URL"><img alt="Test Samples" src="https://img.shields.io/badge/%F0%9F%A7%AA%20Test%20Samples-00B4D8"></a>
-    <a href="TODO_TECHNICAL_REPORT_URL"><img alt="Technical Report" src="https://img.shields.io/badge/Technical_Report-B31B1B?logo=arxiv&logoColor=white"></a>
+    <a href="https://huggingface.co/datasets/D-Robotics/Uranus-Demo-Data"><img alt="Test Samples" src="https://img.shields.io/badge/%F0%9F%A7%AA%20Test%20Samples-00B4D8"></a>
+    <!-- <a href="TODO_TECHNICAL_REPORT_URL"><img alt="Technical Report" src="https://img.shields.io/badge/Technical_Report-B31B1B?logo=arxiv&logoColor=white"></a> -->
     <a href="https://d-robotics-ai-lab.github.io/large-model-team/blog/uranus/"><img alt="Blog" src="https://img.shields.io/badge/Blog-FF7A00?logo=githubpages&logoColor=white"></a>
-    <a href="TODO_WECHAT_URL"><img alt="WeChat" src="https://img.shields.io/badge/WeChat-07C160?logo=wechat&logoColor=white"></a>
+    <a href="https://github.com/D-Robotics-AI-Lab/Uranus-OSS/raw/main/assets/figures/wechat.jpg"><img alt="WeChat" src="https://img.shields.io/badge/WeChat-07C160?logo=wechat&logoColor=white"></a>
     <a href="https://github.com/D-Robotics-AI-Lab/Uranus-OSS"><img alt="GitHub" src="https://img.shields.io/badge/OSS_Code-0077FF.svg?logo=github&logoColor=white"></a>
+    <a href="https://github.com/D-Robotics-AI-Lab/Uranus-SDK"><img alt="GitHub" src="https://img.shields.io/badge/SDK_Code-0077FF.svg?logo=github&logoColor=white"></a>
 </p>
 
 -----
@@ -69,6 +70,19 @@ All commands in this repo are run through `uv run python <cmd>`, which resolves 
 | Uranus-1.3B-Distillation | 🤗 [Huggingface](https://huggingface.co/D-Robotics/Uranus-1.3B-Distillation)    🤖 [ModelScope](https://www.modelscope.cn/models/D-Robotics/Uranus-1.3B-Distillation)     | Distilled model, 384×640, 4 inference steps |
 
 
+You can download the weights with the Hugging Face CLI (`pip install -U huggingface_hub` if you don't have it):
+
+```bash
+# SFT model (17.5 GB) into ./weights/uranus-1.3b
+hf download D-Robotics/Uranus-1.3B --local-dir ./weights/uranus-1.3b
+
+# Distilled model (17.5 GB) into ./weights/uranus-1.3b-distillation
+hf download D-Robotics/Uranus-1.3B-Distillation --local-dir ./weights/uranus-1.3b-distillation
+```
+
+For gated repos, set `HF_TOKEN` first (`hf auth login` or `export HF_TOKEN=...`). The same repos are mirrored on ModelScope — use `modelscope download D-Robotics/Uranus-1.3B --local-dir ./weights/uranus-1.3b`.
+
+
 Uranus consumes converted weights from a single directory. Expected layout:
 
 ```
@@ -84,7 +98,13 @@ weights_dir/
 
 #### Download test samples
 
-We provide a set of ready-to-run test samples covering a variety of robot embodiments (ALOHA, ARX5, UR5, Franka, G1, DOS-W1, X5) and data sources (AgiBot World, DROID, RC-Table). Download and unpack them from [here](TODO_TEST_SAMPLES_URL) into `examples/data/`.
+We provide a set of ready-to-run test samples covering a variety of robot embodiments (ALOHA, ARX5, UR5, Franka, G1, DOS-W1, X5) and data sources (AgiBot World, DROID, RC-Table). Download and unpack them from [Huggingface](https://huggingface.co/datasets/D-Robotics/Uranus-Data) into `examples/data/`.
+
+```bash
+hf download D-Robotics/Uranus-Demo-Data --repo-type dataset --local-dir ./examples/data
+```
+
+Each episode lands in `./examples/data/<episode_id>/` and can be passed directly to `main.py --sample-dir`.
 
 Each sample is a self-contained "XML-environment" directory:
 
@@ -114,6 +134,30 @@ uv run python main.py \
   --output-dir ./output
 ```
 
+**Flag reference**
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--weights-dir` | yes | Path to the converted weights directory (see [Download model weights](#download-model-weights)). Must contain `metadata.json`. |
+| `--sample-dir` | yes | Path to a single XML-environment sample (see [Download test samples](#download-test-samples)). |
+| `--output-dir` | no | Root directory for generated videos. Defaults to `./output`. |
+| `--num-chunks` | no | Number of autoregressive chunks to roll out. Omit to automatically use every frame in `temporal.json` (trailing partial chunk is padded with the last frame, then trimmed back to the original length in the output). |
+
+**Hyperparameters are auto-resolved from `metadata.json`**
+
+`num_inference_steps`, `step_length`, `default_height`, `default_width`, and `teacher_forcing_window_size` are read from the checkpoint's `metadata.json` automatically — no extra flags are needed. Any flag passed explicitly on the CLI takes precedence over the metadata. For example, the SFT model defaults to 25 denoising steps, while the distilled model defaults to 4.
+
+**Outputs**
+
+Each run writes four aligned video streams per camera under `--output-dir`:
+
+- `gen/` — model-generated video
+- `gt/` — ground-truth video (copied from the sample for comparison)
+- `skeleton/` — rendered MuJoCo skeleton visualization
+- `plucker/` — Plücker-coordinate conditioning visualization (force RGB + ray-direction RGB)
+
+Plus a `preview.mp4` that stacks all four streams side by side for quick qualitative comparison.
+
 
 ## License
 
@@ -135,4 +179,8 @@ This project is released under the [Apache License 2.0](LICENSE). By using, dist
 
 ## Contact Us
 
-If you would like to leave a message to our research or product teams, feel free to join our [Discord](TODO_DISCORD_URL) or [WeChat groups](TODO_WECHAT_URL)!
+If you would like to leave a message to our research or product teams, feel free to join our [WeChat](https://github.com/D-Robotics-AI-Lab/Uranus-OSS/raw/main/assets/figures/wechat.jpg) groups!
+
+<p align="center">
+    <img src="https://cdn.jsdelivr.net/gh/D-Robotics-AI-Lab/Uranus-OSS@main/assets/figures/company.svg" alt="D-Robotics" width="400"/>
+</p>
