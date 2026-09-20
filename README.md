@@ -17,7 +17,7 @@ limitations under the License.
 -->
 
 <p align="center">
-    <img src="https://github.com/D-Robotics-AI-Lab/Uranus-OSS/blob/readme-update/assets/figures/logo.png" width="400"/>
+    <img src="https://github.com/D-Robotics-AI-Lab/Uranus-OSS/blob/main/assets/figures/logo.png" width="400"/>
 </p>
 <p align="center">
     <a href="https://huggingface.co/collections/D-Robotics/uranus"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-yellow"></a>
@@ -182,5 +182,5 @@ This project is released under the [Apache License 2.0](LICENSE). By using, dist
 If you would like to leave a message to our research or product teams, feel free to join our [WeChat](https://github.com/D-Robotics-AI-Lab/Uranus-OSS/raw/main/assets/figures/wechat.jpg) groups!
 
 <p align="center">
-    <img src="https://github.com/D-Robotics-AI-Lab/Uranus-OSS/blob/readme-update/assets/figures/company.svg" alt="D-Robotics" width="400"/>
+    <img src="https://github.com/D-Robotics-AI-Lab/Uranus-OSS/blob/main/assets/figures/company.svg" alt="D-Robotics" width="400"/>
 </p>
