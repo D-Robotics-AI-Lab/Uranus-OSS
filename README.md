@@ -80,7 +80,7 @@ hf download D-Robotics/Uranus-1.3B --local-dir ./weights/uranus-1.3b
 hf download D-Robotics/Uranus-1.3B-Distillation --local-dir ./weights/uranus-1.3b-distillation
 ```
 
-For gated repos, set `HF_TOKEN` first (`hf auth login` or `export HF_TOKEN=...`). The same repos are mirrored on ModelScope — use `modelscope download D-Robotics/Uranus-1.3B --local-dir ./weights/uranus-1.3b`.
+The same repos are mirrored on ModelScope — use `modelscope download D-Robotics/Uranus-1.3B --local-dir ./weights/uranus-1.3b`.
 
 
 Uranus consumes converted weights from a single directory. Expected layout:
