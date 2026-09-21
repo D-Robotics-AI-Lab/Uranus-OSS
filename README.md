@@ -163,6 +163,9 @@ Plus a `preview.mp4` that stacks all four streams side by side for quick qualita
 
 This project is released under the [Apache License 2.0](LICENSE). By using, distributing, or contributing to this repository, you agree to the terms and conditions of the license.
 
+## Acknowledgments
+
+We would like to express our gratitude to the [Wan](https://github.com/Wan-Video/Wan2.1/tree/main) and [diffsynth](https://github.com/modelscope/diffsynth-studio) Team for open-sourcing their code and models. Their contributions have been instrumental to the development of this project.
 
 ## Citation
 
