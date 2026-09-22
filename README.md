@@ -32,7 +32,7 @@ limitations under the License.
 
 -----
 
-In this repository, we present **Uranus**, a data-driven robot simulator built around a joint-trajectoryconditioned autoregressive diffusion model. Uranus offers three key capabilities:
+In this repository, we present **Uranus**, a data-driven robot simulator built around a joint-trajectory conditioned autoregressive diffusion model. Uranus offers three key capabilities:
 
 - **streaming, open-ended rollout**, which receives future joint-position trajectories online and autoregressively
 generates one latent frame per step, corresponding to four RGB frames, without a fixed horizon
