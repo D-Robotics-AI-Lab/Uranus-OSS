@@ -23,7 +23,7 @@ limitations under the License.
     <a href="https://huggingface.co/collections/D-Robotics/uranus"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-yellow"></a>
     <a href="https://www.modelscope.cn/collections/D-Robotics/Uranus"><img alt="ModelScope" src="https://img.shields.io/badge/%F0%9F%A4%96%20ModelScope-8A2BE2"></a>
     <a href="https://huggingface.co/datasets/D-Robotics/Uranus-Demo-Data"><img alt="Test Samples" src="https://img.shields.io/badge/%F0%9F%A7%AA%20Test%20Samples-00B4D8"></a>
-    <!-- <a href="TODO_TECHNICAL_REPORT_URL"><img alt="Technical Report" src="https://img.shields.io/badge/Technical_Report-B31B1B?logo=arxiv&logoColor=white"></a> -->
+    <a href="https://arxiv.org/abs/2609.24815"><img alt="Technical Report" src="https://img.shields.io/badge/Technical_Report-B31B1B?logo=arxiv&logoColor=white"></a>
     <a href="https://d-robotics-ai-lab.github.io/large-model-team/blog/uranus/"><img alt="Blog" src="https://img.shields.io/badge/Blog-FF7A00?logo=githubpages&logoColor=white"></a>
     <a href="https://github.com/D-Robotics-AI-Lab/Uranus-OSS/raw/main/assets/figures/wechat.jpg"><img alt="WeChat" src="https://img.shields.io/badge/WeChat-07C160?logo=wechat&logoColor=white"></a>
     <a href="https://github.com/D-Robotics-AI-Lab/Uranus-OSS"><img alt="GitHub" src="https://img.shields.io/badge/OSS_Code-0077FF.svg?logo=github&logoColor=white"></a>
@@ -40,7 +40,7 @@ generates one latent frame per step, corresponding to four RGB frames, without a
 - **scalable, extensible robot control**, providing a unified interface for synchronized multi-view generation
 across diverse robot embodiments and camera configurations.
 
-More technical details can be found in our [technical report](TODO_TECHNICAL_REPORT_URL), and visualization demos are available on our [blog](https://d-robotics-ai-lab.github.io/large-model-team/blog/uranus/).
+More technical details can be found in our [technical report](https://arxiv.org/abs/2609.24815), and visualization demos are available on our [blog](https://d-robotics-ai-lab.github.io/large-model-team/blog/uranus/).
 
 ## Quickstart
 
